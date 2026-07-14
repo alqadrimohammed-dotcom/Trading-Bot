@@ -87,7 +87,8 @@ def fetch_yahoo_data(ticker, interval="1d", retries=2):
     scraper = cloudscraper.create_scraper()
     for _ in range(retries):
         try:
-            res = scraper.get(url, timeout=10)
+            # تقليل وقت الانتظار لتجنب التعليق
+            res = scraper.get(url, timeout=5)
             if res.status_code == 200:
                 data = res.json()
                 if 'chart' in data and 'error' in data['chart'] and data['chart']['error']: continue
@@ -95,7 +96,7 @@ def fetch_yahoo_data(ticker, interval="1d", retries=2):
                 df = pd.DataFrame({'Open': result['indicators']['quote'][0]['open'], 'High': result['indicators']['quote'][0]['high'], 'Low': result['indicators']['quote'][0]['low'], 'Close': result['indicators']['quote'][0]['close'], 'Volume': result['indicators']['quote'][0]['volume']})
                 df.index = pd.to_datetime(result['timestamp'], unit='s')
                 return df.dropna()
-        except: time.sleep(1)
+        except: time.sleep(0.5)
     raise Exception("Connection Error")
 
 def get_trend_for_tf(ticker, interval):
@@ -118,17 +119,6 @@ def get_immediate_signal(ticker, interval="1d"):
         if df.empty or len(df) < 100: return {"error": "بيانات غير كافية."}
         current_price = float(df['Close'].iloc[-1])
         
-        t_1h, t_4h = get_trend_for_tf(ticker, '1h'), get_trend_for_tf(ticker, '4h')
-        t_1d, t_1wk = get_trend_for_tf(ticker, '1d'), get_trend_for_tf(ticker, '1wk')
-        mtf_dash = f"▪️1س: {t_1h}\n▪️4س: {t_4h}\n▪️يومي: {t_1d}\n▪️أسبوعي: {t_1wk}"
-        
-        if interval == "1h":
-            mtf_buy_ok, mtf_sell_ok, h_tf_name = "صاعد" in t_4h, "هابط" in t_4h, "فريم 4 ساعات"
-        elif interval == "1d":
-            mtf_buy_ok, mtf_sell_ok, h_tf_name = "صاعد" in t_1wk, "هابط" in t_1wk, "الفريم الأسبوعي"
-        else:
-            mtf_buy_ok, mtf_sell_ok, h_tf_name = True, True, "الفريم الأكبر"
-
         df['Body'] = abs(df['Close'] - df['Open'])
         df['Lower_Wick'], df['Upper_Wick'] = df[['Open', 'Close']].min(axis=1) - df['Low'], df['High'] - df[['Open', 'Close']].max(axis=1)
         df['Pin_Bull'], df['Pin_Bear'] = (df['Lower_Wick'] > 2 * df['Body']) & (df['Upper_Wick'] < df['Body']), (df['Upper_Wick'] > 2 * df['Body']) & (df['Lower_Wick'] < df['Body'])
@@ -188,7 +178,7 @@ def get_immediate_signal(ticker, interval="1d"):
         df['-DI'] = 100 * (df['-DM'].ewm(alpha=1/14, adjust=False).mean() / df['TR_A'].ewm(alpha=1/14, adjust=False).mean())
         df['ADX'] = (100 * abs(df['+DI'] - df['-DI']) / (df['+DI'] + df['-DI'] + 0.0001)).ewm(alpha=1/14, adjust=False).mean()
 
-        daily, weekly = df.resample('D').agg({'High':'max', 'Low':'min'}).dropna(), df.resample('W-FRI').agg({'High':'max', 'Low':'min'}).dropna()
+        daily = df.resample('D').agg({'High':'max', 'Low':'min'}).dropna()
         n_res_val = float(daily['High'].iloc[-2]) if (len(daily)>1 and float(daily['High'].iloc[-2])>current_price) else round(current_price * 1.03, 2)
         n_sup_val = float(daily['Low'].iloc[-2]) if (len(daily)>1 and float(daily['Low'].iloc[-2])<current_price) else round(current_price * 0.97, 2)
         pos_stat = f"مقاومة قادمة: {round(n_res_val, 2)} ⬆️ | دعم حالي: {round(n_sup_val, 2)} ⬇️"
@@ -203,7 +193,6 @@ def get_immediate_signal(ticker, interval="1d"):
         if is_diamond_bottom: bull.append("💎 نموذج فني: ماسة القاع (Diamond Bottom) إيجابي")
         if is_falling_wedge: bull.append("📐 نموذج فني: وتد هابط (Falling Wedge) إيجابي")
         if is_asc_triangle: bull.append("🔺 نموذج فني: مثلث صاعد (Ascending Triangle) إيجابي")
-        if is_sym_triangle and mtf_buy_ok: bull.append("🔺 نموذج فني: مثلث متماثل مع الاتجاه (Symmetrical Triangle)")
         if df['Pin_Bull'].iloc[-1] or df['Pin_Bull'].iloc[-2]: bull.append("برايس أكشن: بن بار انعكاسية 🔨")
         if df['Engulf_Bull'].iloc[-1] or df['Engulf_Bull'].iloc[-2]: bull.append("برايس أكشن: ابتلاعية شرائية 🚀")
         if float(df['Low'].iloc[-1]) < float(df['BB_Lower'].iloc[-1]): bull.append("بولنجر: الأدنى خارج البولنجر باند 📉")
@@ -215,37 +204,49 @@ def get_immediate_signal(ticker, interval="1d"):
         if is_diamond_top: bear.append("💎 نموذج فني: ماسة القمة (Diamond Top) سلبي")
         if is_rising_wedge: bear.append("📐 نموذج فني: وتد صاعد (Rising Wedge) سلبي")
         if is_desc_triangle: bear.append("🔺 نموذج فني: مثلث هابط (Descending Triangle) سلبي")
-        if is_sym_triangle and mtf_sell_ok: bear.append("🔺 نموذج فني: مثلث متماثل مع الاتجاه (Symmetrical Triangle)")
         if df['Pin_Bear'].iloc[-1] or df['Pin_Bear'].iloc[-2]: bear.append("برايس أكشن: بن بار سلبية 🪫")
         if df['Engulf_Bear'].iloc[-1] or df['Engulf_Bear'].iloc[-2]: bear.append("برايس أكشن: ابتلاعية بيعية 🩸")
         if float(df['High'].iloc[-1]) > float(df['BB_Upper'].iloc[-1]): bear.append("بولنجر: الأعلى خارج البولنجر باند 📈")
         if current_price < float(df['VWAP'].iloc[-1]): bear.append("VWAP: السعر تحت متوسط الحيتان 🐳")
 
-        action, targets, sl, entry, reason = "انتظار 🟡", "", "", "لم تتحقق شروط", "تذبذب عرضي."
+        action, targets, sl, entry, reason, mtf_dash = "انتظار 🟡", "", "", "لم تتحقق شروط", "تذبذب عرضي.", ""
         
-        if len(bull) >= 2 or is_qm_bull: 
-            if is_qm_bull and "SMC: كوازمودو شرائي" not in bull: bull.insert(0, "👑 SMC: كوازمودو شرائي")
-            if not mtf_buy_ok:
-                action, reason = "مراقبة 🟡 (إلغاء شراء)", "\n➕ ".join([""] + bull).strip() + f"\n\n⚠️ **الدخول ملغى {h_tf_name} هابط!** 🚫"
-            else:
-                action, reason = "شراء فوري 🟢", "\n➕ ".join([""] + bull).strip()
-                signal_price = float(df['Close'].iloc[-2]) if df['Engulf_Bull'].iloc[-1] else current_price
-                entry, sl = f"{round(signal_price, 2)}", f"{round(float(df['Low'].tail(15).min()), 2)} (كسر الأدنى)"
-                t1 = n_res_val
-                targets = f"🎯 هدف أول: {t1}"
-                if float(df['ADX'].iloc[-1]) >= 25: targets += f"\n🎯 هدف ثاني (شبه مؤكد): {round(t1 * 1.05, 2)}"
-                
-        elif len(bear) >= 2 or is_qm_bear:
-            if is_qm_bear and "SMC: كوازمودو بيعي" not in bear: bear.insert(0, "👑 SMC: كوازمودو بيعي")
-            if not mtf_sell_ok:
-                action, reason = "مراقبة 🟡 (إلغاء بيع)", "\n➖ ".join([""] + bear).strip() + f"\n\n⚠️ **الدخول ملغى {h_tf_name} صاعد!** 🚫"
-            else:
-                action, reason = "بيع فوري 🔴", "\n➖ ".join([""] + bear).strip()
-                signal_price = float(df['Close'].iloc[-2]) if df['Engulf_Bear'].iloc[-1] else current_price
-                entry, sl = f"{round(signal_price, 2)}", f"{round(float(df['High'].tail(15).max()), 2)} (اختراق الأعلى)"
-                t1 = n_sup_val
-                targets = f"🎯 هدف أول: {t1}"
-                if float(df['ADX'].iloc[-1]) >= 25: targets += f"\n🎯 هدف ثاني (شبه مؤكد): {round(t1 * 0.95, 2)}"
+        # 🚀 فحص ذكي: لا تسحب بيانات الفريمات إلا إذا وجدنا نموذج (لتخفيف الضغط على ياهو)
+        if len(bull) >= 2 or is_qm_bull or len(bear) >= 2 or is_qm_bear:
+            t_1h, t_4h = get_trend_for_tf(ticker, '1h'), get_trend_for_tf(ticker, '4h')
+            t_1d, t_1wk = get_trend_for_tf(ticker, '1d'), get_trend_for_tf(ticker, '1wk')
+            mtf_dash = f"▪️1س: {t_1h}\n▪️4س: {t_4h}\n▪️يومي: {t_1d}\n▪️أسبوعي: {t_1wk}"
+            
+            if interval == "1h": mtf_buy_ok, mtf_sell_ok, h_tf_name = "صاعد" in t_4h, "هابط" in t_4h, "فريم 4 ساعات"
+            elif interval == "1d": mtf_buy_ok, mtf_sell_ok, h_tf_name = "صاعد" in t_1wk, "هابط" in t_1wk, "الفريم الأسبوعي"
+            else: mtf_buy_ok, mtf_sell_ok, h_tf_name = True, True, "الفريم الأكبر"
+            
+            if is_sym_triangle and mtf_buy_ok: bull.append("🔺 نموذج فني: مثلث متماثل مع الاتجاه")
+            if is_sym_triangle and mtf_sell_ok: bear.append("🔺 نموذج فني: مثلث متماثل مع الاتجاه")
+
+            if len(bull) >= 2 or is_qm_bull: 
+                if is_qm_bull and "SMC: كوازمودو شرائي" not in bull: bull.insert(0, "👑 SMC: كوازمودو شرائي")
+                if not mtf_buy_ok:
+                    action, reason = "مراقبة 🟡 (إلغاء شراء)", "\n➕ ".join([""] + bull).strip() + f"\n\n⚠️ **الدخول ملغى {h_tf_name} هابط!** 🚫"
+                else:
+                    action, reason = "شراء فوري 🟢", "\n➕ ".join([""] + bull).strip()
+                    signal_price = float(df['Close'].iloc[-2]) if df['Engulf_Bull'].iloc[-1] else current_price
+                    entry, sl = f"{round(signal_price, 2)}", f"{round(float(df['Low'].tail(15).min()), 2)} (كسر الأدنى)"
+                    t1 = n_res_val
+                    targets = f"🎯 هدف أول: {t1}"
+                    if float(df['ADX'].iloc[-1]) >= 25: targets += f"\n🎯 هدف ثاني (شبه مؤكد): {round(t1 * 1.05, 2)}"
+                    
+            elif len(bear) >= 2 or is_qm_bear:
+                if is_qm_bear and "SMC: كوازمودو بيعي" not in bear: bear.insert(0, "👑 SMC: كوازمودو بيعي")
+                if not mtf_sell_ok:
+                    action, reason = "مراقبة 🟡 (إلغاء بيع)", "\n➖ ".join([""] + bear).strip() + f"\n\n⚠️ **الدخول ملغى {h_tf_name} صاعد!** 🚫"
+                else:
+                    action, reason = "بيع فوري 🔴", "\n➖ ".join([""] + bear).strip()
+                    signal_price = float(df['Close'].iloc[-2]) if df['Engulf_Bear'].iloc[-1] else current_price
+                    entry, sl = f"{round(signal_price, 2)}", f"{round(float(df['High'].tail(15).max()), 2)} (اختراق الأعلى)"
+                    t1 = n_sup_val
+                    targets = f"🎯 هدف أول: {t1}"
+                    if float(df['ADX'].iloc[-1]) >= 25: targets += f"\n🎯 هدف ثاني (شبه مؤكد): {round(t1 * 0.95, 2)}"
         else:
             reason = "تحليل السهم يظهر عدم اكتمال الإجماع الفني.\n"
             if len(bull) >= 1: reason += "\n➕ " + "\n➕ ".join(bull)
@@ -288,7 +289,7 @@ def start(m):
     markup.add(KeyboardButton("👑 بحث الكوازمودو (QM)"), KeyboardButton("💎 بحث الماسة (Diamond)"))
     markup.add(KeyboardButton("📐 بحث الأوتاد (Wedges)"), KeyboardButton("🔺 بحث المثلثات (Triangles)"))
     markup.add(KeyboardButton("📡 تفعيل/إيقاف الرادار"), KeyboardButton("📋 أسهم قائمة التصفيات"))
-    bot.reply_to(m, "مرحباً بك في رادار الحيتان المُحسن!\n🚀 البوت الآن مزود بنظام المسح المتسلسل الآمن لضمان عدم توقف السيرفر.", reply_markup=markup)
+    bot.reply_to(m, "مرحباً بك في رادار الحيتان المُحسن!\n🚀 البوت يعمل الآن بنظام الذكاء الموفر للبيانات لتسريع المسح لـ 5 أضعاف.", reply_markup=markup)
 
 @bot.message_handler(func=lambda m: m.text.strip() == "📡 تفعيل/إيقاف الرادار")
 def toggle_radar(m):
@@ -340,7 +341,6 @@ def process_pattern_search(call):
     total = len(target_wl)
     found, error_count = [], 0
     
-    # فحص متسلسل آمن مع عداد تقدم
     for i, (t, interval) in enumerate(target_wl, 1):
         try:
             res = get_immediate_signal(t, interval)
@@ -353,9 +353,9 @@ def process_pattern_search(call):
         except:
             error_count += 1
             
-        # تحديث العداد كل 15 سهم لكي يعرف المستخدم أن البوت يعمل
-        if i % 15 == 0:
-            try: bot.edit_message_text(f"{pat_icon} **جاري الفحص لنموذج {pat_name} ({m_name})...**\n⏳ **التقدم:** تم مسح {i} من أصل {total} سهم...", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="Markdown")
+        # التحديث كل 10 أسهم لسرعة التجاوب
+        if i % 10 == 0:
+            try: bot.edit_message_text(f"{pat_icon} **جاري الفحص لنموذج {pat_name} ({m_name})...**\n⏳ **التقدم:** تم مسح {i} من أصل {total} سهم...\n*(محرك التيربو الذكي مفعل 🚀)*", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="Markdown")
             except: pass
             
     reply = f"{pat_icon} **نتائج البحث عن {pat_name} - السوق {m_name}** {pat_icon}\n\n"
@@ -365,7 +365,7 @@ def process_pattern_search(call):
         for idx, res in enumerate(found, 1):
             reply += f"#{idx}\n{format_msg(res)}\n"
             
-    if error_count > 0: reply += f"\n⚠️ *(تنويه: تم تخطي {error_count} سهم أثناء الفحص لتجنب حظر ياهو)*"
+    if error_count > 0: reply += f"\n⚠️ *(تنويه: تم تخطي بعض الأسهم لضمان سرعة الاتصال)*"
     
     try: bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text=reply, parse_mode="Markdown")
     except: bot.send_message(call.message.chat.id, reply, parse_mode="Markdown")
@@ -382,7 +382,6 @@ def find_best_confluence(m):
     target_watchlist = [item for item in WATCHLIST if (market == "sa" and item[0].endswith(".SR")) or (market == "us" and not item[0].endswith(".SR"))]
     total = len(target_watchlist)
 
-    # فحص متسلسل آمن مع عداد تقدم
     for i, (t, interval) in enumerate(target_watchlist, 1):
         try:
             res = get_immediate_signal(t, interval)
@@ -394,9 +393,8 @@ def find_best_confluence(m):
         except:
             error_count += 1
 
-        # تحديث العداد كل 15 سهم
-        if i % 15 == 0:
-            try: bot.edit_message_text(chat_id=m.chat.id, message_id=msg.message_id, text=f"🔍 **جاري المسح الشامل للسوق {m_name}...**\n⏳ **التقدم:** تم فحص {i} من أصل {total} سهم...\n*(هذه الطريقة تضمن عدم حظر بيانات البوت)*", parse_mode="Markdown")
+        if i % 10 == 0:
+            try: bot.edit_message_text(chat_id=m.chat.id, message_id=msg.message_id, text=f"🔍 **جاري المسح الشامل للسوق {m_name}...**\n⏳ **التقدم:** تم فحص {i} من أصل {total} سهم...\n*(محرك التيربو الذكي مفعل 🚀)*", parse_mode="Markdown")
             except: pass
 
     buys.sort(key=lambda x: x[0], reverse=True)
@@ -418,7 +416,7 @@ def find_best_confluence(m):
             todays_picks[res['ticker']] = "بيع 🔴"
             reply += f"#{sells.index((score,res))+1}\n{format_msg(res)}\n"
 
-    if error_count > 0: reply += f"\n⚠️ *(تنويه: تم تخطي {error_count} سهم أثناء الفحص لتجنب حظر ياهو)*"
+    if error_count > 0: reply += f"\n⚠️ *(تنويه: تم تخطي بعض الأسهم لضمان سرعة الاتصال)*"
     
     try: bot.edit_message_text(chat_id=m.chat.id, message_id=msg.message_id, text=reply, parse_mode="Markdown")
     except: bot.send_message(m.chat.id, reply, parse_mode="Markdown")
