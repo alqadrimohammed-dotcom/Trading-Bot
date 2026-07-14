@@ -13,8 +13,8 @@ from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 
 warnings.filterwarnings('ignore')
 
-# ضَع التوكن الخاص بك هنا
-TOKEN = "8666366975:AAH4-OOQyeaqZVa5ldW2dbGaydqQNEntrB0"
+# تم تحديث التوكن الجديد هنا بنجاح!
+TOKEN = "8666366975:AAFaapaj0XAHUO8-6PbzzNY0GGWiit0bKsk"
 bot = telebot.TeleBot(TOKEN)
 
 WATCHLIST = [
