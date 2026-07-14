@@ -98,72 +98,59 @@ def fetch_yahoo_data(ticker, interval="1d", retries=2):
         except: time.sleep(0.5)
     raise Exception("Connection Error")
 
-def get_mtf_analysis(ticker, interval):
-    try:
-        df = fetch_yahoo_data(ticker, interval)
-        if len(df) < 50: return "غير محدد ⚪ | انتظار"
-        c = float(df['Close'].iloc[-1])
-        sma50 = float(df['Close'].rolling(50).mean().iloc[-1])
-        prev_high = float(df['High'].iloc[-20:-10].max())
-        
-        # الاتجاه العام للفريم
-        if c > prev_high and c > sma50: trend = "صاعد قوي 🟢"
-        elif c > sma50: trend = "صاعد 🟡"
-        elif c < sma50 and c < df['Low'].iloc[-20:-10].min(): trend = "هابط قوي 🔴"
-        elif c < sma50: trend = "هابط 🟠"
-        else: trend = "عرضي ⚪"
+def get_analysis_data(ticker, interval):
+    df = fetch_yahoo_data(ticker, interval)
+    if len(df) < 50: return {"trend": "عرضي", "models": [], "label": "عرضي ⚪ | توازن"}
+    
+    c = float(df['Close'].iloc[-1])
+    sma50 = float(df['Close'].rolling(50).mean().iloc[-1])
+    prev_high = float(df['High'].iloc[-20:-10].max())
+    
+    if c > prev_high and c > sma50: 
+        trend = "صاعد"
+        label = "صاعد قوي 🟢 | سيطرة مشترين"
+    elif c > sma50: 
+        trend = "صاعد"
+        label = "صاعد 🟡 | مسار إيجابي"
+    elif c < sma50 and c < df['Low'].iloc[-20:-10].min(): 
+        trend = "هابط"
+        label = "هابط قوي 🔴 | سيطرة بائعين"
+    elif c < sma50: 
+        trend = "هابط"
+        label = "هابط 🟠 | مسار سلبي"
+    else: 
+        trend = "عرضي"
+        label = "عرضي ⚪ | توازن"
 
-        # فحص سريع للمدارس الفنية والنماذج على هذا الفريم
-        df['Body'] = abs(df['Close'] - df['Open'])
-        df['Sweep_Bull'] = df['Low'] < df['Low'].rolling(15).min().shift(1)
-        df['Sweep_Bear'] = df['High'] > df['High'].rolling(15).max().shift(1)
-        df['CHoCH_Bull'] = df['Close'] > df['High'].rolling(8).max().shift(1)
-        df['CHoCH_Bear'] = df['Close'] < df['Low'].rolling(8).min().shift(1)
-        is_qm_bull = (df['Sweep_Bull'].tail(5).any()) and (df['CHoCH_Bull'].iloc[-1])
-        is_qm_bear = (df['Sweep_Bear'].tail(5).any()) and (df['CHoCH_Bear'].iloc[-1])
-        df['Bullish_FVG'] = df['Low'] > df['High'].shift(2)
-        df['Bearish_FVG'] = df['High'] < df['Low'].shift(2)
+    models = []
+    df['Body'] = abs(df['Close'] - df['Open'])
+    df['Sweep_Bull'] = df['Low'] < df['Low'].rolling(15).min().shift(1)
+    df['Sweep_Bear'] = df['High'] > df['High'].rolling(15).max().shift(1)
+    df['CHoCH_Bull'] = df['Close'] > df['High'].rolling(8).max().shift(1)
+    df['CHoCH_Bear'] = df['Close'] < df['Low'].rolling(8).min().shift(1)
+    
+    if (df['Sweep_Bull'].tail(5).any()) and (df['CHoCH_Bull'].iloc[-1]): models.append("👑 كوازمودو")
+    if (df['Sweep_Bear'].tail(5).any()) and (df['CHoCH_Bear'].iloc[-1]): models.append("🩸 كوازمودو بيعي")
+    
+    if df['Low'].iloc[-1] > df['High'].shift(2).iloc[-1]: models.append("FVG شرائي")
+    if df['High'].iloc[-1] < df['Low'].shift(2).iloc[-1]: models.append("FVG بيعي")
+    
+    safe_range = (df['High'] - df['Low']).replace(0, 0.0001)
+    wyckoff_acc = (df['Close'] < df['Close'].rolling(50).mean()) & (df['Volume'] > 1.5 * df['Volume'].rolling(20).mean()) & (((df['Close'] - df['Low']) / safe_range) > 0.75)
+    wyckoff_dist = (df['Close'] > df['Close'].rolling(50).mean()) & (df['Volume'] > 1.5 * df['Volume'].rolling(20).mean()) & (((df['High'] - df['Close']) / safe_range) > 0.75)
+    if wyckoff_acc.iloc[-1] or wyckoff_acc.tail(3).any(): models.append("📊 تجميع")
+    if wyckoff_dist.iloc[-1] or wyckoff_dist.tail(3).any(): models.append("📉 تصريف")
+    
+    if len(df) >= 30:
+        x_20 = np.arange(20)
+        slope_high, _ = np.polyfit(x_20, df['High'].iloc[-20:].values, 1)
+        slope_low, _ = np.polyfit(x_20, df['Low'].iloc[-20:].values, 1)
+        converging = (df['High'].iloc[-20:].values[0] - df['Low'].iloc[-20:].values[0]) > (df['High'].iloc[-20:].values[-1] - df['Low'].iloc[-20:].values[-1])
+        if (slope_high < 0) and (slope_low < 0) and (slope_high < slope_low) and converging: models.append("📐 وتد هابط")
+        elif (slope_high > 0) and (slope_low > 0) and (slope_low > slope_high) and converging: models.append("📐 وتد صاعد")
+        elif (slope_high < 0) and (slope_low > 0) and converging: models.append("🔺 مثلث متماثل")
         
-        safe_range = (df['High'] - df['Low']).replace(0, 0.0001)
-        wyckoff_acc = (df['Close'] < df['Close'].rolling(50).mean()) & (df['Volume'] > 1.5 * df['Volume'].rolling(20).mean()) & (((df['Close'] - df['Low']) / safe_range) > 0.75)
-        wyckoff_dist = (df['Close'] > df['Close'].rolling(50).mean()) & (df['Volume'] > 1.5 * df['Volume'].rolling(20).mean()) & (((df['High'] - df['Close']) / safe_range) > 0.75)
-
-        models = []
-        if is_qm_bull: models.append("👑 كوازمودو")
-        elif is_qm_bear: models.append("🩸 كوازمودو بيعي")
-        
-        if wyckoff_acc.iloc[-1] or wyckoff_acc.tail(3).any(): models.append("📊 تجميع")
-        elif wyckoff_dist.iloc[-1] or wyckoff_dist.tail(3).any(): models.append("📉 تصريف")
-        
-        if df['Bullish_FVG'].iloc[-1]: models.append("FVG شرائي")
-        elif df['Bearish_FVG'].iloc[-1]: models.append("FVG بيعي")
-
-        if len(df) >= 30:
-            x_15 = np.arange(15)
-            h_1, l_1 = df['High'].iloc[-30:-15].values, df['Low'].iloc[-30:-15].values
-            h_2, l_2 = df['High'].iloc[-15:].values, df['Low'].iloc[-15:].values
-            sh1, _ = np.polyfit(x_15, h_1, 1)
-            sl1, _ = np.polyfit(x_15, l_1, 1)
-            sh2, _ = np.polyfit(x_15, h_2, 1)
-            sl2, _ = np.polyfit(x_15, l_2, 1)
-            expanding = (sh1 > 0) and (sl1 < 0) 
-            contracting_dia = (sh2 < 0) and (sl2 > 0)
-            if expanding and contracting_dia and (c > float(df['Close'].iloc[-15])): models.append("💎 ماسة إيجابية")
-            elif expanding and contracting_dia and (c < float(df['Close'].iloc[-15])): models.append("💎 ماسة سلبية")
-
-            x_20 = np.arange(20)
-            slope_high, _ = np.polyfit(x_20, df['High'].iloc[-20:].values, 1)
-            slope_low, _ = np.polyfit(x_20, df['Low'].iloc[-20:].values, 1)
-            converging = (df['High'].iloc[-20:].values[0] - df['Low'].iloc[-20:].values[0]) > (df['High'].iloc[-20:].values[-1] - df['Low'].iloc[-20:].values[-1])
-            if (slope_high < 0) and (slope_low < 0) and (slope_high < slope_low) and converging: models.append("📐 وتد هابط")
-            elif (slope_high > 0) and (slope_low > 0) and (slope_low > slope_high) and converging: models.append("📐 وتد صاعد")
-            elif (slope_high < 0) and (slope_low > 0) and converging: models.append("🔺 مثلث متماثل")
-
-        decision = "شراء" if "صاعد" in trend else ("بيع" if "هابط" in trend else "انتظار")
-        pat_str = f" ⟵ ({' | '.join(models)})" if models else ""
-        
-        return f"{trend} | {decision}{pat_str}"
-    except: return "غير محدد ⚪ | انتظار"
+    return {"trend": trend, "models": models, "label": label}
 
 def get_immediate_signal(ticker, interval="1d"):
     try:
@@ -189,35 +176,7 @@ def get_immediate_signal(ticker, interval="1d"):
         wyckoff_acc = (df['Close'] < df['Close'].rolling(50).mean()) & (df['Volume'] > 1.5 * df['Volume'].rolling(20).mean()) & (((df['Close'] - df['Low']) / safe_range) > 0.75)
         wyckoff_dist = (df['Close'] > df['Close'].rolling(50).mean()) & (df['Volume'] > 1.5 * df['Volume'].rolling(20).mean()) & (((df['High'] - df['Close']) / safe_range) > 0.75)
 
-        if len(df) >= 30:
-            x_20 = np.arange(20)
-            highs_20, lows_20 = df['High'].iloc[-20:].values, df['Low'].iloc[-20:].values
-            slope_high, _ = np.polyfit(x_20, highs_20, 1)
-            slope_low, _ = np.polyfit(x_20, lows_20, 1)
-            converging = (highs_20[0] - lows_20[0]) > (highs_20[-1] - lows_20[-1])
-            is_falling_wedge = (slope_high < 0) and (slope_low < 0) and (slope_high < slope_low) and converging
-            is_rising_wedge = (slope_high > 0) and (slope_low > 0) and (slope_low > slope_high) and converging
-            is_asc_triangle = (abs(slope_high) <= abs(slope_low) * 0.3) and (slope_low > 0) and converging
-            is_desc_triangle = (abs(slope_low) <= abs(slope_high) * 0.3) and (slope_high < 0) and converging
-            is_sym_triangle = (slope_high < 0) and (slope_low > 0) and converging
-
-            x_15 = np.arange(15)
-            h_1, l_1 = df['High'].iloc[-30:-15].values, df['Low'].iloc[-30:-15].values
-            h_2, l_2 = df['High'].iloc[-15:].values, df['Low'].iloc[-15:].values
-            sh1, _ = np.polyfit(x_15, h_1, 1)
-            sl1, _ = np.polyfit(x_15, l_1, 1)
-            sh2, _ = np.polyfit(x_15, h_2, 1)
-            sl2, _ = np.polyfit(x_15, l_2, 1)
-            expanding = (sh1 > 0) and (sl1 < 0) 
-            contracting_dia = (sh2 < 0) and (sl2 > 0)
-            is_diamond_bottom = expanding and contracting_dia and (current_price > float(df['Close'].iloc[-15]))
-            is_diamond_top = expanding and contracting_dia and (current_price < float(df['Close'].iloc[-15]))
-        else:
-            is_falling_wedge, is_rising_wedge, is_asc_triangle, is_desc_triangle, is_sym_triangle = [False]*5
-            is_diamond_bottom, is_diamond_top = False, False
-
         df['SMA_20'] = df['Close'].rolling(20).mean()
-        df['RSI'] = 100 - (100 / (1 + df['Close'].diff().clip(lower=0).ewm(com=13).mean() / (-1 * df['Close'].diff().clip(upper=0)).ewm(com=13).mean()))
         df['BB_Lower'], df['BB_Upper'] = df['SMA_20'] - (2 * df['Close'].rolling(20).std()), df['SMA_20'] + (2 * df['Close'].rolling(20).std())
         df['Typical_Price'] = (df['High'] + df['Low'] + df['Close']) / 3
         df['VWAP'] = (df['Volume'] * df['Typical_Price']).rolling(window=20).sum() / df['Volume'].rolling(window=20).sum()
@@ -225,7 +184,6 @@ def get_immediate_signal(ticker, interval="1d"):
         daily = df.resample('D').agg({'High':'max', 'Low':'min'}).dropna()
         n_res_val = float(daily['High'].iloc[-2]) if (len(daily)>1 and float(daily['High'].iloc[-2])>current_price) else round(current_price * 1.03, 2)
         n_sup_val = float(daily['Low'].iloc[-2]) if (len(daily)>1 and float(daily['Low'].iloc[-2])<current_price) else round(current_price * 0.97, 2)
-        pos_stat = f"مقاومة قادمة: {round(n_res_val, 2)} ⬆️ | دعم حالي: {round(n_sup_val, 2)} ⬇️"
 
         bull, bear = [], []
         is_qm_bull = (df['Sweep_Bull'].tail(5).any()) and (df['CHoCH_Bull'].iloc[-1])
@@ -234,9 +192,6 @@ def get_immediate_signal(ticker, interval="1d"):
         if df['Bullish_FVG'].iloc[-1]: bull.append("SMC: فجوة سيولة شرائية (FVG)")
         if at_demand: bull.append("🎯 طلب: ارتداد من منطقة طلب")
         if wyckoff_acc.iloc[-1] or wyckoff_acc.tail(3).any(): bull.append("📊 وايكوف: تجميع وسيولة ضخمة بالقاع")
-        if is_diamond_bottom: bull.append("💎 نموذج فني: ماسة القاع (Diamond Bottom) إيجابي")
-        if is_falling_wedge: bull.append("📐 نموذج فني: وتد هابط (Falling Wedge) إيجابي")
-        if is_asc_triangle: bull.append("🔺 نموذج فني: مثلث صاعد (Ascending Triangle) إيجابي")
         if df['Pin_Bull'].iloc[-1] or df['Pin_Bull'].iloc[-2]: bull.append("برايس أكشن: بن بار انعكاسية 🔨")
         if df['Engulf_Bull'].iloc[-1] or df['Engulf_Bull'].iloc[-2]: bull.append("برايس أكشن: ابتلاعية شرائية 🚀")
         if float(df['Low'].iloc[-1]) < float(df['BB_Lower'].iloc[-1]): bull.append("بولنجر: الأدنى خارج البولنجر باند 📉")
@@ -245,69 +200,74 @@ def get_immediate_signal(ticker, interval="1d"):
         if df['Bearish_FVG'].iloc[-1]: bear.append("SMC: فجوة سيولة بيعية (FVG)")
         if at_supply: bear.append("🎯 عرض: ارتداد من منطقة عرض")
         if wyckoff_dist.iloc[-1] or wyckoff_dist.tail(3).any(): bear.append("📊 وايكوف: تصريف وسيولة بالقمة")
-        if is_diamond_top: bear.append("💎 نموذج فني: ماسة القمة (Diamond Top) سلبي")
-        if is_rising_wedge: bear.append("📐 نموذج فني: وتد صاعد (Rising Wedge) سلبي")
-        if is_desc_triangle: bear.append("🔺 نموذج فني: مثلث هابط (Descending Triangle) سلبي")
         if df['Pin_Bear'].iloc[-1] or df['Pin_Bear'].iloc[-2]: bear.append("برايس أكشن: بن بار سلبية 🪫")
         if df['Engulf_Bear'].iloc[-1] or df['Engulf_Bear'].iloc[-2]: bear.append("برايس أكشن: ابتلاعية بيعية 🩸")
         if float(df['High'].iloc[-1]) > float(df['BB_Upper'].iloc[-1]): bear.append("بولنجر: الأعلى خارج البولنجر باند 📈")
         if current_price < float(df['VWAP'].iloc[-1]): bear.append("VWAP: السعر تحت متوسط الحيتان 🐳")
 
-        action, targets, sl, entry, reason, mtf_dash = "انتظار 🟡", "", "", "لم تتحقق شروط", "تذبذب عرضي.", ""
+        action, targets, sl, entry, reason, mtf_dash = "انتظار 🟡", "", "", "لم تتحقق شروط", "تذبذب عرضي.", []
         
-        # لا نجلب الفريمات المتعددة إلا إذا كان هناك بوادر دخول لتوفير الموارد وتسريع المسح
-        if len(bull) >= 2 or is_qm_bull or len(bear) >= 2 or is_qm_bear:
-            t_1h = get_mtf_analysis(ticker, '1h')
-            t_4h = get_mtf_analysis(ticker, '4h')
-            t_1d = get_mtf_analysis(ticker, '1d')
-            t_1wk = get_mtf_analysis(ticker, '1wk')
-            mtf_dash = f"▪️1س: {t_1h}\n▪️4س: {t_4h}\n▪️يومي: {t_1d}\n▪️أسبوعي: {t_1wk}"
+        t_1h = get_analysis_data(ticker, '1h')
+        t_4h = get_analysis_data(ticker, '4h')
+        t_1d = get_analysis_data(ticker, '1d')
+        t_1wk = get_analysis_data(ticker, '1wk')
+        
+        mtf_dash.append(f"1س: {t_1h['label']}" + (f" ⟵ ({' | '.join(t_1h['models'])})" if t_1h['models'] else ""))
+        mtf_dash.append(f"4س: {t_4h['label']}" + (f" ⟵ ({' | '.join(t_4h['models'])})" if t_4h['models'] else ""))
+        mtf_dash.append(f"يومي: {t_1d['label']}" + (f" ⟵ ({' | '.join(t_1d['models'])})" if t_1d['models'] else ""))
+        mtf_dash.append(f"أسبوعي: {t_1wk['label']}" + (f" ⟵ ({' | '.join(t_1wk['models'])})" if t_1wk['models'] else ""))
+        
+        if interval == "1h": 
+            # للسوق الأمريكي: يشترط الفريم 4 ساعات واليومي فقط.
+            mtf_buy_ok = (t_4h['trend'] == "صاعد") and (t_1d['trend'] == "صاعد")
+            mtf_sell_ok = (t_4h['trend'] == "هابط") and (t_1d['trend'] == "هابط")
+            h_tf_name = "الفريمات الكبرى (4س واليومي)"
             
-            # استخراج الترند المجرد لتحديد توافق الفريم الأكبر
-            trend_4h = t_4h.split('|')[0]
-            trend_1wk = t_1wk.split('|')[0]
+            # ميزة "الخير والبركة": إذا وافق الأسبوعي نضيفها كسبب داعم، وإذا خالف لا نلغي الصفقة.
+            if t_1wk['trend'] == "صاعد": bull.append("🌟 إجماع شامل: الفريم الأسبوعي يوافق الاتجاه ويدعم الصعود (خير وبركة)")
+            if t_1wk['trend'] == "هابط": bear.append("🌟 إجماع شامل: الفريم الأسبوعي يوافق الاتجاه ويدعم الهبوط (خير وبركة)")
             
-            if interval == "1h": mtf_buy_ok, mtf_sell_ok, h_tf_name = "صاعد" in trend_4h, "هابط" in trend_4h, "فريم 4 ساعات"
-            elif interval == "1d": mtf_buy_ok, mtf_sell_ok, h_tf_name = "صاعد" in trend_1wk, "هابط" in trend_1wk, "الفريم الأسبوعي"
-            else: mtf_buy_ok, mtf_sell_ok, h_tf_name = True, True, "الفريم الأكبر"
-            
-            if is_sym_triangle and mtf_buy_ok: bull.append("🔺 نموذج فني: مثلث متماثل مع الاتجاه")
-            if is_sym_triangle and mtf_sell_ok: bear.append("🔺 نموذج فني: مثلث متماثل مع الاتجاه")
+        elif interval == "1d": 
+            # للسوق السعودي: يشترط الفريم الأسبوعي
+            mtf_buy_ok = t_1wk['trend'] == "صاعد"
+            mtf_sell_ok = t_1wk['trend'] == "هابط"
+            h_tf_name = "الفريم الأسبوعي"
+        else: 
+            mtf_buy_ok, mtf_sell_ok, h_tf_name = True, True, "الفريم الأكبر"
 
-            # القرار الأساسي يبنى على المدارس الفنية وتوافق الترند
-            if len(bull) >= 2 or is_qm_bull: 
-                if is_qm_bull and "SMC: كوازمودو شرائي" not in bull: bull.insert(0, "👑 SMC: كوازمودو شرائي")
-                if not mtf_buy_ok:
-                    action, reason = "مراقبة 🟡 (إلغاء شراء)", "\n➕ ".join([""] + bull).strip() + f"\n\n⚠️ **الدخول ملغى {h_tf_name} هابط!** 🚫"
-                else:
-                    action, reason = "شراء فوري 🟢", "\n➕ ".join([""] + bull).strip()
-                    signal_price = float(df['Close'].iloc[-2]) if df['Engulf_Bull'].iloc[-1] else current_price
-                    entry, sl = f"{round(signal_price, 2)}", f"{round(float(df['Low'].tail(15).min()), 2)} (كسر الأدنى)"
-                    t1 = n_res_val
-                    targets = f"🎯 هدف أول: {t1}"
-                    
-            elif len(bear) >= 2 or is_qm_bear:
-                if is_qm_bear and "SMC: كوازمودو بيعي" not in bear: bear.insert(0, "👑 SMC: كوازمودو بيعي")
-                if not mtf_sell_ok:
-                    action, reason = "مراقبة 🟡 (إلغاء بيع)", "\n➖ ".join([""] + bear).strip() + f"\n\n⚠️ **الدخول ملغى {h_tf_name} صاعد!** 🚫"
-                else:
-                    action, reason = "بيع فوري 🔴", "\n➖ ".join([""] + bear).strip()
-                    signal_price = float(df['Close'].iloc[-2]) if df['Engulf_Bear'].iloc[-1] else current_price
-                    entry, sl = f"{round(signal_price, 2)}", f"{round(float(df['High'].tail(15).max()), 2)} (اختراق الأعلى)"
-                    t1 = n_sup_val
-                    targets = f"🎯 هدف أول: {t1}"
+        if len(bull) >= 2 or is_qm_bull: 
+            if is_qm_bull and "SMC: كوازمودو شرائي" not in bull: bull.insert(0, "👑 SMC: كوازمودو شرائي")
+            if not mtf_buy_ok:
+                action, reason = "مراقبة 🟡 (إلغاء شراء)", "\n➕ ".join([""] + bull).strip() + f"\n\n⚠️ **الدخول ملغى لأن {h_tf_name} هابط!** 🚫"
+            else:
+                action, reason = "شراء فوري 🟢", "\n➕ ".join([""] + bull).strip()
+                signal_price = float(df['Close'].iloc[-2]) if df['Engulf_Bull'].iloc[-1] else current_price
+                entry, sl = f"{round(signal_price, 2)}", f"{round(float(df['Low'].tail(15).min()), 2)} (كسر الأدنى)"
+                targets = f"🎯 هدف أول: {round(n_res_val, 2)}"
+                
+        elif len(bear) >= 2 or is_qm_bear:
+            if is_qm_bear and "SMC: كوازمودو بيعي" not in bear: bear.insert(0, "👑 SMC: كوازمودو بيعي")
+            if not mtf_sell_ok:
+                action, reason = "مراقبة 🟡 (إلغاء بيع)", "\n➖ ".join([""] + bear).strip() + f"\n\n⚠️ **الدخول ملغى لأن {h_tf_name} صاعد!** 🚫"
+            else:
+                action, reason = "بيع فوري 🔴", "\n➖ ".join([""] + bear).strip()
+                signal_price = float(df['Close'].iloc[-2]) if df['Engulf_Bear'].iloc[-1] else current_price
+                entry, sl = f"{round(signal_price, 2)}", f"{round(float(df['High'].tail(15).max()), 2)} (اختراق الأعلى)"
+                targets = f"🎯 هدف أول: {round(n_sup_val, 2)}"
         else:
             reason = "تحليل السهم يظهر عدم اكتمال الإجماع الفني.\n"
             if len(bull) >= 1: reason += "\n➕ " + "\n➕ ".join(bull)
             if len(bear) >= 1: reason += "\n➖ " + "\n➖ ".join(bear)
 
-        return {"ticker": ticker, "tf": interval, "price": round(current_price, 2), "action": action, "targets": targets, "sl": sl, "entry": entry, "reason": reason, "mtf_dash": mtf_dash, "position": pos_stat}
+        return {"ticker": ticker, "price": round(current_price, 2), "action": action, "targets": targets, "sl": sl, "entry": entry, "reason": reason, "mtf_dash": mtf_dash}
     except Exception as e: return {"error": str(e), "ticker": ticker}
 
 def format_msg(res):
-    msg = f"📊 **السهم:** {get_display_name(res['ticker'])}\n💵 **السعر الحالي:** {res['price']}\n🧭 **موقع السهم:**\n{res['position']}\n"
-    if res.get('mtf_dash'): msg += f"━━━━━━━━━━━━\n🧭 **لوحة توافق الفريمات (MTF):**\n{res['mtf_dash']}\n"
-    msg += f"━━━━━━━━━━━━\n🎯 **القرار:** {res['action']}\n🛒 **سعر الإشارة:** {res['entry']}\n🚩 **الأهداف:** \n{res['targets']}\n🛑 **الوقف:** {res['sl']}\n💡 **الأسباب الفنية:**\n{res['reason']}\n"
+    if "error" in res: return f"⚠️ تعذر تحليل السهم: {res.get('ticker', '')}"
+    msg = f"🎯 **القرار:** {res['action']}\n"
+    msg += f"📊 **السهم:** {get_display_name(res['ticker'])} | **السعر:** {res['price']}\n"
+    msg += f"━━━━━━━━━━━━\n🧭 **لوحة الفريمات (MTF):**\n" + "\n".join([f"▪️ {line}" for line in res['mtf_dash']])
+    msg += f"\n━━━━━━━━━━━━\n🛒 **سعر الإشارة:** {res['entry']}\n🚩 **الأهداف:** \n{res['targets']}\n🛑 **الوقف:** {res['sl']}\n💡 **الأسباب الفنية:**\n{res['reason']}\n"
     return msg
 
 def auto_scanner():
@@ -338,7 +298,7 @@ def start(m):
     markup.add(KeyboardButton("👑 بحث الكوازمودو (QM)"), KeyboardButton("💎 بحث الماسة (Diamond)"))
     markup.add(KeyboardButton("📐 بحث الأوتاد (Wedges)"), KeyboardButton("🔺 بحث المثلثات (Triangles)"))
     markup.add(KeyboardButton("📡 تفعيل/إيقاف الرادار"), KeyboardButton("📋 أسهم قائمة التصفيات"))
-    bot.reply_to(m, "مرحباً بك في رادار الحيتان المُحسن!\n🚀 تم تطبيق المدارس الفنية والنماذج على جميع الفريمات في اللوحة الشاملة.", reply_markup=markup)
+    bot.reply_to(m, "مرحباً بك في رادار الحيتان المُحسن!\n🚀 تم تفعيل قاعدة (الخير والبركة) للسوق الأمريكي.", reply_markup=markup)
 
 @bot.message_handler(func=lambda m: m.text.strip() == "📡 تفعيل/إيقاف الرادار")
 def toggle_radar(m):
