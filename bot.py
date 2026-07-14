@@ -72,12 +72,20 @@ ARABIC_TICKERS = {
     "اليانز": "8040.SR", "الدرع العربي": "8070.SR", "تكافل الراجحي": "8230.SR"
 }
 
+# إعدادات غرفة العمليات المستقلة
+radar_settings = {
+    "sa": True,      # السوق السعودي
+    "us": True,      # السوق الأمريكي
+    "market": True,  # رادار استكشاف النماذج الجديدة
+    "sniper": True   # رادار القناص (إعادة الاختبار)
+}
+
 subscribed_chats = set()
 todays_picks = {}
+todays_sniper_picks = {} # قائمة الأسهم التي تم قنصها بنجاح اليوم
 retest_alerts = {} # ذاكرة التنبيهات لأي سهم يشكل نموذج صحيح
-notified_retests = set() # لمنع الإزعاج وتكرار نفس التنبيه في نفس اليوم
+notified_retests = set() 
 last_update_date = date.today()
-radar_active = True 
 
 def get_display_name(ticker):
     for name, t in ARABIC_TICKERS.items():
@@ -233,6 +241,7 @@ def get_immediate_signal(ticker, interval="1d", record_alert=False):
         else: 
             mtf_buy_ok, mtf_sell_ok, h_tf_name = True, True, "الفريم الأكبر"
 
+        # قرار الدخول يتطلب نموذج صريح وتوافق تام
         if len(bull) >= 2 or is_qm_bull: 
             if is_qm_bull and "SMC: كوازمودو شرائي" not in bull: bull.insert(0, "👑 SMC: كوازمودو شرائي")
             if not mtf_buy_ok:
@@ -263,7 +272,7 @@ def get_immediate_signal(ticker, interval="1d", record_alert=False):
         if record_alert and ("فوري" in action):
             try:
                 exact_entry = float(entry.split()[0])
-                model_name = reason.split('\n')[0].replace('➕ ', '').replace('➖ ', '') # أخذ أول نموذج كسبب
+                model_name = reason.split('\n')[0].replace('➕ ', '').replace('➖ ', '')
                 retest_alerts[ticker] = {"price": exact_entry, "action": action, "model": model_name}
             except: pass
 
@@ -279,42 +288,61 @@ def format_msg(res):
     return msg
 
 def auto_scanner():
-    global radar_active
     while True:
-        if radar_active and subscribed_chats:
+        if subscribed_chats:
             for ticker, interval in WATCHLIST:
                 try:
-                    df_current = fetch_yahoo_data(ticker, interval)
-                    current_p = float(df_current['Close'].iloc[-1])
-                    
+                    # فلترة الأسواق حسب إعدادات اللوحة
+                    market_type = "sa" if ticker.endswith(".SR") else "us"
+                    if market_type == "sa" and not radar_settings["sa"]: continue
+                    if market_type == "us" and not radar_settings["us"]: continue
+
                     # 1. نظام القناص (مراقبة الأسهم المحفوظة في الذاكرة)
-                    if ticker in retest_alerts and (ticker, date.today()) not in notified_retests:
+                    if radar_settings["sniper"] and ticker in retest_alerts and (ticker, date.today()) not in notified_retests:
+                        df_current = fetch_yahoo_data(ticker, interval)
+                        current_p = float(df_current['Close'].iloc[-1])
                         target_info = retest_alerts[ticker]
                         target_price = target_info["price"]
-                        # إذا تراجع السعر ولمس نقطة الدخول أو اقترب منها بفارق 0.5%
+                        
+                        # إذا تراجع السعر ولمس نقطة الدخول أو اقترب منها
                         if abs(current_p - target_price) <= (target_price * 0.005):
-                            alert_msg = f"🚨 **قناص التداول (نقطة الدخول)** 🚨\n\n📊 السهم: {get_display_name(ticker)}\n🎯 **السعر الآن مناسب للدخول:** {current_p}\n🛒 **نقطة النموذج الأساسية:** {target_price}\n💡 **بناءً على:** {target_info['model']}"
+                            alert_msg = f"🚨 **قناص التداول (إشارة تنفذت الآن)** 🚨\n\n📊 السهم: {get_display_name(ticker)}\n🎯 **السعر وصل لنقطة الدخول:** {current_p}\n🛒 **نقطة النموذج:** {target_price}\n💡 **بناءً على:** {target_info['model']}"
                             for chat_id in subscribed_chats:
                                 try: bot.send_message(chat_id, alert_msg, parse_mode="Markdown")
                                 except: pass
-                            notified_retests.add((ticker, date.today())) # منع التكرار اليوم
+                            
+                            # تسجيل السهم في قائمة القناص لليوم ومنع إرسال تنبيه متكرر
+                            notified_retests.add((ticker, date.today())) 
+                            todays_sniper_picks[ticker] = {"price": target_price, "model": target_info['model']}
                             del retest_alerts[ticker]
 
-                    # 2. البحث عن نماذج جديدة وحفظها في الذاكرة
-                    res = get_immediate_signal(ticker, interval, record_alert=True)
-                    if res and "error" not in res and ("فوري" in res['action']):
-                        for chat_id in subscribed_chats:
-                            try: bot.send_message(chat_id, f"🚨 **رادار النماذج الجديد** 🚨\n*(تم حفظ نقطة الدخول في القناص لمعاودة الاختبار)*\n\n{format_msg(res)}", parse_mode="Markdown")
-                            except: pass
+                    # 2. رادار النماذج (اكتشاف نماذج جديدة 100%)
+                    if radar_settings["market"]:
+                        res = get_immediate_signal(ticker, interval, record_alert=True)
+                        if res and "error" not in res and ("فوري" in res['action']):
+                            for chat_id in subscribed_chats:
+                                try: bot.send_message(chat_id, f"🚨 **رادار النماذج (اكتشاف جديد)** 🚨\n*(تم حفظ نقطة الدخول في القناص لمعاودة الاختبار)*\n\n{format_msg(res)}", parse_mode="Markdown")
+                                except: pass
                 except: pass
         time.sleep(600)
 
 def check_new_day():
-    global todays_picks, last_update_date, notified_retests
+    global todays_picks, todays_sniper_picks, last_update_date, notified_retests
     if date.today() > last_update_date:
         todays_picks.clear()
-        notified_retests.clear() # تفريغ مانع الإزعاج لليوم الجديد
+        todays_sniper_picks.clear()
+        notified_retests.clear()
         last_update_date = date.today()
+
+# دالة لتوليد لوحة تحكم الرادار
+def get_radar_markup():
+    markup = InlineKeyboardMarkup(row_width=1)
+    btn_sa = InlineKeyboardButton(f"{'✅' if radar_settings['sa'] else '❌'} رادار السوق السعودي 🇸🇦", callback_data="toggle_sa")
+    btn_us = InlineKeyboardButton(f"{'✅' if radar_settings['us'] else '❌'} رادار السوق الأمريكي 🇺🇸", callback_data="toggle_us")
+    btn_market = InlineKeyboardButton(f"{'✅' if radar_settings['market'] else '❌'} رادار استكشاف النماذج 📡", callback_data="toggle_market")
+    btn_sniper = InlineKeyboardButton(f"{'✅' if radar_settings['sniper'] else '❌'} رادار القناص (الدخول) 🎯", callback_data="toggle_sniper")
+    markup.add(btn_sa, btn_us, btn_market, btn_sniper)
+    return markup
 
 @bot.message_handler(commands=['start'])
 def start(m):
@@ -323,15 +351,31 @@ def start(m):
     markup.add(KeyboardButton("🇸🇦 تصفية شاملة (سعودي)"), KeyboardButton("🇺🇸 تصفية شاملة (أمريكي)"))
     markup.add(KeyboardButton("👑 بحث الكوازمودو (QM)"), KeyboardButton("💎 بحث الماسة (Diamond)"))
     markup.add(KeyboardButton("📐 بحث الأوتاد (Wedges)"), KeyboardButton("🔺 بحث المثلثات (Triangles)"))
-    markup.add(KeyboardButton("📡 تفعيل/إيقاف الرادار"), KeyboardButton("📋 أسهم قائمة التصفيات"))
-    bot.reply_to(m, "مرحباً بك في رادار الحيتان المُحسن!\n🚀 تم تفعيل (نظام القناص) لمراقبة نقاط الدخول المثالية لجميع النماذج.", reply_markup=markup)
+    markup.add(KeyboardButton("⚙️ لوحة تحكم الرادار"), KeyboardButton("🎯 أسهم القناص (اليوم)"))
+    markup.add(KeyboardButton("📋 أسهم قائمة التصفيات"))
+    bot.reply_to(m, "مرحباً بك في رادار الحيتان المُحسن!\n🚀 تم تحويل البوت إلى (غرفة عمليات متكاملة) لخدمتك.", reply_markup=markup)
 
-@bot.message_handler(func=lambda m: m.text.strip() == "📡 تفعيل/إيقاف الرادار")
-def toggle_radar(m):
-    global radar_active
-    radar_active = not radar_active
-    msg = "✅ **تم تفعيل الرادار والقناص.**" if radar_active else "❌ **تم إيقاف الرادار.**"
-    bot.reply_to(m, msg)
+@bot.message_handler(func=lambda m: m.text.strip() == "⚙️ لوحة تحكم الرادار")
+def radar_panel(m):
+    bot.reply_to(m, "⚙️ **غرفة التحكم المستقلة:**\nاضغط على أي زر لتشغيل أو إيقاف الخدمة التي تريدها:", reply_markup=get_radar_markup(), parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("toggle_"))
+def toggle_radar_setting(call):
+    key = call.data.split("_")[1]
+    radar_settings[key] = not radar_settings[key]
+    bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=get_radar_markup())
+
+@bot.message_handler(func=lambda m: m.text.strip() == "🎯 أسهم القناص (اليوم)")
+def show_sniper_picks(m):
+    check_new_day()
+    if not todays_sniper_picks:
+        bot.reply_to(m, "📭 لم يقم القناص باصطياد أي سهم حتى الآن اليوم.\n*(يجب أن يضرب السعر نقطة الدخول المحفوظة ليظهر هنا)*", parse_mode="Markdown")
+    else:
+        current_date_str = date.today().strftime('%d-%m-%Y')
+        reply = f"🎯 **قائمة صيد القناص الناجحة لتاريخ ({current_date_str}):**\n\n"
+        for idx, (t, details) in enumerate(todays_sniper_picks.items(), 1):
+            reply += f"{idx}. **{get_display_name(t)}** ⬅️ تم الدخول عند: {details['price']}\n💡 النموذج: {details['model']}\n\n"
+        bot.reply_to(m, reply, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda m: m.text.strip() == "📋 أسهم قائمة التصفيات")
 def show_todays_picks(m):
@@ -378,7 +422,6 @@ def process_pattern_search(call):
     
     for i, (t, interval) in enumerate(target_wl, 1):
         try:
-            # هنا نفعل تسجيل القناص يدوياً أثناء المسح
             res = get_immediate_signal(t, interval, record_alert=True)
             if res and "error" not in res:
                 if kw in res['reason'] and ("شراء" in res['action'] or "بيع" in res['action']):
@@ -459,7 +502,7 @@ def find_best_confluence(m):
 @bot.message_handler(func=lambda m: True)
 def analyze_manual_stock(m):
     text = m.text.strip().upper()
-    ignore = ["🇸🇦 تصفية شاملة (سعودي)", "🇺🇸 تصفية شاملة (أمريكي)", "👑 بحث الكوازمودو (QM)", "💎 بحث الماسة (Diamond)", "📐 بحث الأوتاد (Wedges)", "🔺 بحث المثلثات (Triangles)", "📡 تفعيل/إيقاف الرادار", "📋 أسهم قائمة التصفيات"]
+    ignore = ["🇸🇦 تصفية شاملة (سعودي)", "🇺🇸 تصفية شاملة (أمريكي)", "👑 بحث الكوازمودو (QM)", "💎 بحث الماسة (Diamond)", "📐 بحث الأوتاد (Wedges)", "🔺 بحث المثلثات (Triangles)", "⚙️ لوحة تحكم الرادار", "🎯 أسهم القناص (اليوم)", "📋 أسهم قائمة التصفيات"]
     if text in ignore or text.startswith("/"): return
     t = ARABIC_TICKERS.get(text.replace("أ", "ا").replace("إ", "ا").replace("ة", "ه"), text)
     if t.isdigit() and len(t) == 4: t += ".SR"
