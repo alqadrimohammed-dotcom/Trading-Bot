@@ -87,7 +87,6 @@ def fetch_yahoo_data(ticker, interval="1d", retries=2):
     scraper = cloudscraper.create_scraper()
     for _ in range(retries):
         try:
-            # تقليل وقت الانتظار لتجنب التعليق
             res = scraper.get(url, timeout=5)
             if res.status_code == 200:
                 data = res.json()
@@ -99,19 +98,72 @@ def fetch_yahoo_data(ticker, interval="1d", retries=2):
         except: time.sleep(0.5)
     raise Exception("Connection Error")
 
-def get_trend_for_tf(ticker, interval):
+def get_mtf_analysis(ticker, interval):
     try:
         df = fetch_yahoo_data(ticker, interval)
-        if len(df) < 50: return "غير محدد ⚪"
+        if len(df) < 50: return "غير محدد ⚪ | انتظار"
         c = float(df['Close'].iloc[-1])
         sma50 = float(df['Close'].rolling(50).mean().iloc[-1])
         prev_high = float(df['High'].iloc[-20:-10].max())
-        if c > prev_high and c > sma50: return "صاعد قوي 🟢"
-        elif c > sma50: return "صاعد ضعيف 🟡"
-        elif c < sma50 and c < df['Low'].iloc[-20:-10].min(): return "هابط قوي 🔴"
-        elif c < sma50: return "هابط ضعيف 🟠"
-        else: return "عرضي ⚪"
-    except: return "غير محدد ⚪"
+        
+        # الاتجاه العام للفريم
+        if c > prev_high and c > sma50: trend = "صاعد قوي 🟢"
+        elif c > sma50: trend = "صاعد 🟡"
+        elif c < sma50 and c < df['Low'].iloc[-20:-10].min(): trend = "هابط قوي 🔴"
+        elif c < sma50: trend = "هابط 🟠"
+        else: trend = "عرضي ⚪"
+
+        # فحص سريع للمدارس الفنية والنماذج على هذا الفريم
+        df['Body'] = abs(df['Close'] - df['Open'])
+        df['Sweep_Bull'] = df['Low'] < df['Low'].rolling(15).min().shift(1)
+        df['Sweep_Bear'] = df['High'] > df['High'].rolling(15).max().shift(1)
+        df['CHoCH_Bull'] = df['Close'] > df['High'].rolling(8).max().shift(1)
+        df['CHoCH_Bear'] = df['Close'] < df['Low'].rolling(8).min().shift(1)
+        is_qm_bull = (df['Sweep_Bull'].tail(5).any()) and (df['CHoCH_Bull'].iloc[-1])
+        is_qm_bear = (df['Sweep_Bear'].tail(5).any()) and (df['CHoCH_Bear'].iloc[-1])
+        df['Bullish_FVG'] = df['Low'] > df['High'].shift(2)
+        df['Bearish_FVG'] = df['High'] < df['Low'].shift(2)
+        
+        safe_range = (df['High'] - df['Low']).replace(0, 0.0001)
+        wyckoff_acc = (df['Close'] < df['Close'].rolling(50).mean()) & (df['Volume'] > 1.5 * df['Volume'].rolling(20).mean()) & (((df['Close'] - df['Low']) / safe_range) > 0.75)
+        wyckoff_dist = (df['Close'] > df['Close'].rolling(50).mean()) & (df['Volume'] > 1.5 * df['Volume'].rolling(20).mean()) & (((df['High'] - df['Close']) / safe_range) > 0.75)
+
+        models = []
+        if is_qm_bull: models.append("👑 كوازمودو")
+        elif is_qm_bear: models.append("🩸 كوازمودو بيعي")
+        
+        if wyckoff_acc.iloc[-1] or wyckoff_acc.tail(3).any(): models.append("📊 تجميع")
+        elif wyckoff_dist.iloc[-1] or wyckoff_dist.tail(3).any(): models.append("📉 تصريف")
+        
+        if df['Bullish_FVG'].iloc[-1]: models.append("FVG شرائي")
+        elif df['Bearish_FVG'].iloc[-1]: models.append("FVG بيعي")
+
+        if len(df) >= 30:
+            x_15 = np.arange(15)
+            h_1, l_1 = df['High'].iloc[-30:-15].values, df['Low'].iloc[-30:-15].values
+            h_2, l_2 = df['High'].iloc[-15:].values, df['Low'].iloc[-15:].values
+            sh1, _ = np.polyfit(x_15, h_1, 1)
+            sl1, _ = np.polyfit(x_15, l_1, 1)
+            sh2, _ = np.polyfit(x_15, h_2, 1)
+            sl2, _ = np.polyfit(x_15, l_2, 1)
+            expanding = (sh1 > 0) and (sl1 < 0) 
+            contracting_dia = (sh2 < 0) and (sl2 > 0)
+            if expanding and contracting_dia and (c > float(df['Close'].iloc[-15])): models.append("💎 ماسة إيجابية")
+            elif expanding and contracting_dia and (c < float(df['Close'].iloc[-15])): models.append("💎 ماسة سلبية")
+
+            x_20 = np.arange(20)
+            slope_high, _ = np.polyfit(x_20, df['High'].iloc[-20:].values, 1)
+            slope_low, _ = np.polyfit(x_20, df['Low'].iloc[-20:].values, 1)
+            converging = (df['High'].iloc[-20:].values[0] - df['Low'].iloc[-20:].values[0]) > (df['High'].iloc[-20:].values[-1] - df['Low'].iloc[-20:].values[-1])
+            if (slope_high < 0) and (slope_low < 0) and (slope_high < slope_low) and converging: models.append("📐 وتد هابط")
+            elif (slope_high > 0) and (slope_low > 0) and (slope_low > slope_high) and converging: models.append("📐 وتد صاعد")
+            elif (slope_high < 0) and (slope_low > 0) and converging: models.append("🔺 مثلث متماثل")
+
+        decision = "شراء" if "صاعد" in trend else ("بيع" if "هابط" in trend else "انتظار")
+        pat_str = f" ⟵ ({' | '.join(models)})" if models else ""
+        
+        return f"{trend} | {decision}{pat_str}"
+    except: return "غير محدد ⚪ | انتظار"
 
 def get_immediate_signal(ticker, interval="1d"):
     try:
@@ -170,14 +222,6 @@ def get_immediate_signal(ticker, interval="1d"):
         df['Typical_Price'] = (df['High'] + df['Low'] + df['Close']) / 3
         df['VWAP'] = (df['Volume'] * df['Typical_Price']).rolling(window=20).sum() / df['Volume'].rolling(window=20).sum()
         
-        df['Up_M'], df['Dn_M'] = df['High'] - df['High'].shift(1), df['Low'].shift(1) - df['Low']
-        df['TR_A'] = np.maximum(df['High'] - df['Low'], np.maximum(abs(df['High'] - df['Close'].shift(1)), abs(df['Low'] - df['Close'].shift(1))))
-        df['+DM'] = np.where((df['Up_M'] > df['Dn_M']) & (df['Up_M'] > 0), df['Up_M'], 0)
-        df['-DM'] = np.where((df['Dn_M'] > df['Up_M']) & (df['Dn_M'] > 0), df['Dn_M'], 0)
-        df['+DI'] = 100 * (df['+DM'].ewm(alpha=1/14, adjust=False).mean() / df['TR_A'].ewm(alpha=1/14, adjust=False).mean())
-        df['-DI'] = 100 * (df['-DM'].ewm(alpha=1/14, adjust=False).mean() / df['TR_A'].ewm(alpha=1/14, adjust=False).mean())
-        df['ADX'] = (100 * abs(df['+DI'] - df['-DI']) / (df['+DI'] + df['-DI'] + 0.0001)).ewm(alpha=1/14, adjust=False).mean()
-
         daily = df.resample('D').agg({'High':'max', 'Low':'min'}).dropna()
         n_res_val = float(daily['High'].iloc[-2]) if (len(daily)>1 and float(daily['High'].iloc[-2])>current_price) else round(current_price * 1.03, 2)
         n_sup_val = float(daily['Low'].iloc[-2]) if (len(daily)>1 and float(daily['Low'].iloc[-2])<current_price) else round(current_price * 0.97, 2)
@@ -211,19 +255,26 @@ def get_immediate_signal(ticker, interval="1d"):
 
         action, targets, sl, entry, reason, mtf_dash = "انتظار 🟡", "", "", "لم تتحقق شروط", "تذبذب عرضي.", ""
         
-        # 🚀 فحص ذكي: لا تسحب بيانات الفريمات إلا إذا وجدنا نموذج (لتخفيف الضغط على ياهو)
+        # لا نجلب الفريمات المتعددة إلا إذا كان هناك بوادر دخول لتوفير الموارد وتسريع المسح
         if len(bull) >= 2 or is_qm_bull or len(bear) >= 2 or is_qm_bear:
-            t_1h, t_4h = get_trend_for_tf(ticker, '1h'), get_trend_for_tf(ticker, '4h')
-            t_1d, t_1wk = get_trend_for_tf(ticker, '1d'), get_trend_for_tf(ticker, '1wk')
+            t_1h = get_mtf_analysis(ticker, '1h')
+            t_4h = get_mtf_analysis(ticker, '4h')
+            t_1d = get_mtf_analysis(ticker, '1d')
+            t_1wk = get_mtf_analysis(ticker, '1wk')
             mtf_dash = f"▪️1س: {t_1h}\n▪️4س: {t_4h}\n▪️يومي: {t_1d}\n▪️أسبوعي: {t_1wk}"
             
-            if interval == "1h": mtf_buy_ok, mtf_sell_ok, h_tf_name = "صاعد" in t_4h, "هابط" in t_4h, "فريم 4 ساعات"
-            elif interval == "1d": mtf_buy_ok, mtf_sell_ok, h_tf_name = "صاعد" in t_1wk, "هابط" in t_1wk, "الفريم الأسبوعي"
+            # استخراج الترند المجرد لتحديد توافق الفريم الأكبر
+            trend_4h = t_4h.split('|')[0]
+            trend_1wk = t_1wk.split('|')[0]
+            
+            if interval == "1h": mtf_buy_ok, mtf_sell_ok, h_tf_name = "صاعد" in trend_4h, "هابط" in trend_4h, "فريم 4 ساعات"
+            elif interval == "1d": mtf_buy_ok, mtf_sell_ok, h_tf_name = "صاعد" in trend_1wk, "هابط" in trend_1wk, "الفريم الأسبوعي"
             else: mtf_buy_ok, mtf_sell_ok, h_tf_name = True, True, "الفريم الأكبر"
             
             if is_sym_triangle and mtf_buy_ok: bull.append("🔺 نموذج فني: مثلث متماثل مع الاتجاه")
             if is_sym_triangle and mtf_sell_ok: bear.append("🔺 نموذج فني: مثلث متماثل مع الاتجاه")
 
+            # القرار الأساسي يبنى على المدارس الفنية وتوافق الترند
             if len(bull) >= 2 or is_qm_bull: 
                 if is_qm_bull and "SMC: كوازمودو شرائي" not in bull: bull.insert(0, "👑 SMC: كوازمودو شرائي")
                 if not mtf_buy_ok:
@@ -234,7 +285,6 @@ def get_immediate_signal(ticker, interval="1d"):
                     entry, sl = f"{round(signal_price, 2)}", f"{round(float(df['Low'].tail(15).min()), 2)} (كسر الأدنى)"
                     t1 = n_res_val
                     targets = f"🎯 هدف أول: {t1}"
-                    if float(df['ADX'].iloc[-1]) >= 25: targets += f"\n🎯 هدف ثاني (شبه مؤكد): {round(t1 * 1.05, 2)}"
                     
             elif len(bear) >= 2 or is_qm_bear:
                 if is_qm_bear and "SMC: كوازمودو بيعي" not in bear: bear.insert(0, "👑 SMC: كوازمودو بيعي")
@@ -246,7 +296,6 @@ def get_immediate_signal(ticker, interval="1d"):
                     entry, sl = f"{round(signal_price, 2)}", f"{round(float(df['High'].tail(15).max()), 2)} (اختراق الأعلى)"
                     t1 = n_sup_val
                     targets = f"🎯 هدف أول: {t1}"
-                    if float(df['ADX'].iloc[-1]) >= 25: targets += f"\n🎯 هدف ثاني (شبه مؤكد): {round(t1 * 0.95, 2)}"
         else:
             reason = "تحليل السهم يظهر عدم اكتمال الإجماع الفني.\n"
             if len(bull) >= 1: reason += "\n➕ " + "\n➕ ".join(bull)
@@ -289,7 +338,7 @@ def start(m):
     markup.add(KeyboardButton("👑 بحث الكوازمودو (QM)"), KeyboardButton("💎 بحث الماسة (Diamond)"))
     markup.add(KeyboardButton("📐 بحث الأوتاد (Wedges)"), KeyboardButton("🔺 بحث المثلثات (Triangles)"))
     markup.add(KeyboardButton("📡 تفعيل/إيقاف الرادار"), KeyboardButton("📋 أسهم قائمة التصفيات"))
-    bot.reply_to(m, "مرحباً بك في رادار الحيتان المُحسن!\n🚀 البوت يعمل الآن بنظام الذكاء الموفر للبيانات لتسريع المسح لـ 5 أضعاف.", reply_markup=markup)
+    bot.reply_to(m, "مرحباً بك في رادار الحيتان المُحسن!\n🚀 تم تطبيق المدارس الفنية والنماذج على جميع الفريمات في اللوحة الشاملة.", reply_markup=markup)
 
 @bot.message_handler(func=lambda m: m.text.strip() == "📡 تفعيل/إيقاف الرادار")
 def toggle_radar(m):
@@ -353,7 +402,6 @@ def process_pattern_search(call):
         except:
             error_count += 1
             
-        # التحديث كل 10 أسهم لسرعة التجاوب
         if i % 10 == 0:
             try: bot.edit_message_text(f"{pat_icon} **جاري الفحص لنموذج {pat_name} ({m_name})...**\n⏳ **التقدم:** تم مسح {i} من أصل {total} سهم...\n*(محرك التيربو الذكي مفعل 🚀)*", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="Markdown")
             except: pass
