@@ -13,7 +13,7 @@ from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 
 warnings.filterwarnings('ignore')
 
-# تم تحديث التوكن الجديد هنا بنجاح!
+# التوكن الخاص بك
 TOKEN = "8666366975:AAFaapaj0XAHUO8-6PbzzNY0GGWiit0bKsk"
 bot = telebot.TeleBot(TOKEN)
 
@@ -88,7 +88,7 @@ def fetch_yahoo_data(ticker, interval="1d", retries=2):
     scraper = cloudscraper.create_scraper()
     for _ in range(retries):
         try:
-            res = scraper.get(url, timeout=10)
+            res = scraper.get(url, timeout=15)
             if res.status_code == 200:
                 data = res.json()
                 if 'chart' in data and 'error' in data['chart'] and data['chart']['error']: continue
@@ -346,7 +346,8 @@ def process_pattern_search(call):
         try: return get_immediate_signal(t, i)
         except: return {"error": "fail", "ticker": t}
         
-    with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+    # تم التخفيض إلى 3 لضمان عدم اختناق سيرفر Render
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         results = list(executor.map(fetch_task, target_wl))
         
     for res in results:
@@ -385,7 +386,8 @@ def find_best_confluence(m):
         try: return get_immediate_signal(t, i)
         except: return {"error": "fail", "ticker": t}
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+    # تم التخفيض إلى 3 لضمان عدم اختناق سيرفر Render
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         results = list(executor.map(fetch_task, target_watchlist))
 
     for res in results:
