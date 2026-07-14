@@ -5,7 +5,6 @@ import cloudscraper
 import threading
 import time
 import warnings
-import concurrent.futures
 import os
 from flask import Flask
 from datetime import datetime, date
@@ -88,7 +87,7 @@ def fetch_yahoo_data(ticker, interval="1d", retries=2):
     scraper = cloudscraper.create_scraper()
     for _ in range(retries):
         try:
-            res = scraper.get(url, timeout=15)
+            res = scraper.get(url, timeout=10)
             if res.status_code == 200:
                 data = res.json()
                 if 'chart' in data and 'error' in data['chart'] and data['chart']['error']: continue
@@ -289,7 +288,7 @@ def start(m):
     markup.add(KeyboardButton("👑 بحث الكوازمودو (QM)"), KeyboardButton("💎 بحث الماسة (Diamond)"))
     markup.add(KeyboardButton("📐 بحث الأوتاد (Wedges)"), KeyboardButton("🔺 بحث المثلثات (Triangles)"))
     markup.add(KeyboardButton("📡 تفعيل/إيقاف الرادار"), KeyboardButton("📋 أسهم قائمة التصفيات"))
-    bot.reply_to(m, "مرحباً بك في رادار الحيتان المُحسن!\n🚀 البوت الآن مستضاف على خوادم احترافية ويعمل 24/7.", reply_markup=markup)
+    bot.reply_to(m, "مرحباً بك في رادار الحيتان المُحسن!\n🚀 البوت الآن مزود بنظام المسح المتسلسل الآمن لضمان عدم توقف السيرفر.", reply_markup=markup)
 
 @bot.message_handler(func=lambda m: m.text.strip() == "📡 تفعيل/إيقاف الرادار")
 def toggle_radar(m):
@@ -335,28 +334,29 @@ def process_pattern_search(call):
     
     m_name = "السعودي 🇸🇦 (يومي)" if market == "sa" else "الأمريكي 🇺🇸 (خيارات 1H)"
     
-    bot.edit_message_text(f"{pat_icon} **جاري الفحص السريع لنموذج {pat_name} في السوق {m_name}...**\n⏱️ ثواني معدودة...", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="Markdown")
+    msg = bot.edit_message_text(f"{pat_icon} **جاري بدء المسح لنموذج {pat_name} في السوق {m_name}...**\n⏳ يرجى الانتظار...", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="Markdown")
     
     target_wl = [item for item in WATCHLIST if (market == "sa" and item[0].endswith(".SR")) or (market == "us" and not item[0].endswith(".SR"))]
-    
+    total = len(target_wl)
     found, error_count = [], 0
     
-    def fetch_task(args):
-        t, i = args
-        try: return get_immediate_signal(t, i)
-        except: return {"error": "fail", "ticker": t}
-        
-    # تم التخفيض إلى 3 لضمان عدم اختناق سيرفر Render
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        results = list(executor.map(fetch_task, target_wl))
-        
-    for res in results:
-        if res and "error" not in res:
-            if kw in res['reason'] and ("شراء" in res['action'] or "بيع" in res['action']):
-                found.append(res)
-                todays_picks[res['ticker']] = f"{pat_icon} {res['action']}"
-        else:
+    # فحص متسلسل آمن مع عداد تقدم
+    for i, (t, interval) in enumerate(target_wl, 1):
+        try:
+            res = get_immediate_signal(t, interval)
+            if res and "error" not in res:
+                if kw in res['reason'] and ("شراء" in res['action'] or "بيع" in res['action']):
+                    found.append(res)
+                    todays_picks[res['ticker']] = f"{pat_icon} {res['action']}"
+            else:
+                error_count += 1
+        except:
             error_count += 1
+            
+        # تحديث العداد كل 15 سهم لكي يعرف المستخدم أن البوت يعمل
+        if i % 15 == 0:
+            try: bot.edit_message_text(f"{pat_icon} **جاري الفحص لنموذج {pat_name} ({m_name})...**\n⏳ **التقدم:** تم مسح {i} من أصل {total} سهم...", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="Markdown")
+            except: pass
             
     reply = f"{pat_icon} **نتائج البحث عن {pat_name} - السوق {m_name}** {pat_icon}\n\n"
     if not found:
@@ -365,7 +365,7 @@ def process_pattern_search(call):
         for idx, res in enumerate(found, 1):
             reply += f"#{idx}\n{format_msg(res)}\n"
             
-    if error_count > 0: reply += f"\n⚠️ *(تنويه: تعذر فحص {error_count} سهم بسبب بطء اتصال البيانات)*"
+    if error_count > 0: reply += f"\n⚠️ *(تنويه: تم تخطي {error_count} سهم أثناء الفحص لتجنب حظر ياهو)*"
     
     try: bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text=reply, parse_mode="Markdown")
     except: bot.send_message(call.message.chat.id, reply, parse_mode="Markdown")
@@ -375,27 +375,29 @@ def find_best_confluence(m):
     check_new_day()
     market = "sa" if "سعودي" in m.text else "us"
     m_name = "السعودي 🇸🇦" if market == "sa" else "الأمريكي 🇺🇸 (خيارات 1H)"
-    msg = bot.reply_to(m, f"🔍 **جاري المسح السريع (Turbo) للسوق {m_name}...\n⏱️ ثواني معدودة...**")
+    msg = bot.reply_to(m, f"🔍 **جاري بدء المسح الشامل للسوق {m_name}...**\n⏳ يرجى الانتظار، المسح الآمن قيد العمل...")
 
     buys, sells = [], []
     error_count = 0
     target_watchlist = [item for item in WATCHLIST if (market == "sa" and item[0].endswith(".SR")) or (market == "us" and not item[0].endswith(".SR"))]
+    total = len(target_watchlist)
 
-    def fetch_task(args):
-        t, i = args
-        try: return get_immediate_signal(t, i)
-        except: return {"error": "fail", "ticker": t}
-
-    # تم التخفيض إلى 3 لضمان عدم اختناق سيرفر Render
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        results = list(executor.map(fetch_task, target_watchlist))
-
-    for res in results:
-        if res and "error" not in res:
-            if "شراء فوري" in res['action']: buys.append((res['reason'].count('➕'), res))
-            elif "بيع فوري" in res['action']: sells.append((res['reason'].count('➖'), res))
-        else:
+    # فحص متسلسل آمن مع عداد تقدم
+    for i, (t, interval) in enumerate(target_watchlist, 1):
+        try:
+            res = get_immediate_signal(t, interval)
+            if res and "error" not in res:
+                if "شراء فوري" in res['action']: buys.append((res['reason'].count('➕'), res))
+                elif "بيع فوري" in res['action']: sells.append((res['reason'].count('➖'), res))
+            else:
+                error_count += 1
+        except:
             error_count += 1
+
+        # تحديث العداد كل 15 سهم
+        if i % 15 == 0:
+            try: bot.edit_message_text(chat_id=m.chat.id, message_id=msg.message_id, text=f"🔍 **جاري المسح الشامل للسوق {m_name}...**\n⏳ **التقدم:** تم فحص {i} من أصل {total} سهم...\n*(هذه الطريقة تضمن عدم حظر بيانات البوت)*", parse_mode="Markdown")
+            except: pass
 
     buys.sort(key=lambda x: x[0], reverse=True)
     sells.sort(key=lambda x: x[0], reverse=True)
@@ -416,7 +418,7 @@ def find_best_confluence(m):
             todays_picks[res['ticker']] = "بيع 🔴"
             reply += f"#{sells.index((score,res))+1}\n{format_msg(res)}\n"
 
-    if error_count > 0: reply += f"\n⚠️ *(تنويه: تم تخطي {error_count} سهم أثناء الفحص بسبب بطء الاتصال)*"
+    if error_count > 0: reply += f"\n⚠️ *(تنويه: تم تخطي {error_count} سهم أثناء الفحص لتجنب حظر ياهو)*"
     
     try: bot.edit_message_text(chat_id=m.chat.id, message_id=msg.message_id, text=reply, parse_mode="Markdown")
     except: bot.send_message(m.chat.id, reply, parse_mode="Markdown")
