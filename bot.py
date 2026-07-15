@@ -7,8 +7,9 @@ import time
 import warnings
 import os
 import json
-import pymongo # 🚀 الذاكرة السحابية الاحترافية
-from concurrent.futures import ThreadPoolExecutor # 🚀 التيربو لمنع تجمد الفحص
+import pymongo 
+import gc # 🧹 أداة تنظيف الذاكرة العشوائية
+from concurrent.futures import ThreadPoolExecutor 
 from flask import Flask
 from datetime import datetime, date
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
@@ -19,7 +20,6 @@ TOKEN = "8666366975:AAFaapaj0XAHUO8-6PbzzNY0GGWiit0bKsk"
 bot = telebot.TeleBot(TOKEN)
 
 # 🌐 اتصال قاعدة البيانات السحابية (MongoDB)
-# يمكنك وضع الرابط هنا، أو الأفضل أمنياً وضعه في (Config Vars) في Render باسم MONGO_URI
 MONGO_URI = os.environ.get("MONGO_URI", "YOUR_MONGODB_CONNECTION_STRING_HERE")
 
 mongo_connected = False
@@ -36,7 +36,6 @@ try:
 except Exception as e:
     print(f"❌ فشل الاتصال بـ MongoDB: {e}")
 
-# قائمة الأسهم الافتراضية
 DEFAULT_WATCHLIST = [
     ("TSLA", "1h"), ("NVDA", "1h"), ("GOOGL", "1h"), ("MSTR", "1h"),
     ("MSFT", "1h"), ("CRM", "1h"), ("ORCL", "1h"), ("AMZN", "1h"),
@@ -104,11 +103,10 @@ last_update_date = date.today()
 active_trades = {} 
 trade_history = {"wins": 0, "losses": 0, "log": []} 
 ai_learned_patterns = [] 
-in_memory_daily_quasimodo = {} # ذاكرة احتياطية لليوم في حال عدم الاتصال بـ Mongo
+in_memory_daily_quasimodo = {} 
 
 DB_FILE = "bot_database.json"
 
-# 💾 حفظ الذاكرة (سحابياً بـ MongoDB أو محلياً بـ JSON كاحتياط)
 def save_database():
     global WATCHLIST, active_trades, trade_history, retest_alerts, subscribed_chats, ai_learned_patterns
     data = {
@@ -131,7 +129,6 @@ def save_database():
         except Exception as e:
             print(f"Error saving DB: {e}")
 
-# 💾 استرجاع الذاكرة عند بدء التشغيل
 def load_database():
     global active_trades, trade_history, retest_alerts, subscribed_chats, ai_learned_patterns, WATCHLIST
     if mongo_connected:
@@ -152,7 +149,6 @@ def load_database():
         except Exception as e:
             print(f"Error loading from MongoDB: {e}")
             
-    # الاحتياط المحلي
     try:
         if os.path.exists(DB_FILE):
             with open(DB_FILE, 'r', encoding='utf-8') as f:
@@ -173,7 +169,6 @@ def load_database():
         WATCHLIST = DEFAULT_WATCHLIST.copy()
         print(f"Error loading local DB: {e}")
 
-# 🧠 تدوين نماذج كوازمودو اليومية في الذاكرة
 def log_quasimodo_setup(ticker, name, direction, interval, price, details):
     today_str = date.today().strftime('%Y-%m-%d')
     setup_data = {
@@ -186,13 +181,11 @@ def log_quasimodo_setup(ticker, name, direction, interval, price, details):
         "timestamp": datetime.now().isoformat()
     }
     
-    # 1. تدوين محلي بالرام
     if today_str not in in_memory_daily_quasimodo:
         in_memory_daily_quasimodo[today_str] = []
     if not any(x['ticker'] == ticker and x['interval'] == interval and x['direction'] == direction for x in in_memory_daily_quasimodo[today_str]):
         in_memory_daily_quasimodo[today_str].append(setup_data)
         
-    # 2. تدوين سحابي في MongoDB لمنع الضياع
     if mongo_connected:
         try:
             quasimodo_col.update_one(
@@ -214,7 +207,7 @@ def fetch_yahoo_data(ticker, interval="1d", retries=2):
     scraper = cloudscraper.create_scraper()
     for _ in range(retries):
         try:
-            res = scraper.get(url, timeout=3) # تقليص الانتظار لمنع أي تجمد
+            res = scraper.get(url, timeout=3)
             if res.status_code == 200:
                 data = res.json()
                 if 'chart' in data and 'error' in data['chart'] and data['chart']['error']: continue
@@ -334,7 +327,6 @@ def get_immediate_signal(ticker, interval="1d", record_alert=False):
 
         bull, bear = [], []
         
-        # 🚀 التحقق الكلي من كوازمودو + تسجيل الذكاء الاصطناعي اليومي
         is_qm_bull = (df['Sweep_Bull'].tail(5).any()) and (df['CHoCH_Bull'].iloc[-1])
         is_qm_bear = (df['Sweep_Bear'].tail(5).any()) and (df['CHoCH_Bear'].iloc[-1])
         
@@ -525,7 +517,7 @@ def check_new_day():
         todays_picks.clear()
         todays_sniper_picks.clear()
         notified_retests.clear()
-        in_memory_daily_quasimodo = {date.today().strftime('%Y-%m-%d'): []} # مسح مخلفات الأمس لمنع امتلاء الرام
+        in_memory_daily_quasimodo = {date.today().strftime('%Y-%m-%d'): []} 
         last_update_date = date.today()
 
 def get_radar_markup():
@@ -546,14 +538,13 @@ def start(m):
     markup.add(KeyboardButton("🔍 كوازمودو سعودي 🇸🇦"), KeyboardButton("🔍 كوازمودو أمريكي 🇺🇸"))
     markup.add(KeyboardButton("🎯 أسهم القناص (اليوم)"), KeyboardButton("📊 التقرير اليومي للـ AI"))
     markup.add(KeyboardButton("📋 أسهم قائمة التصفيات"), KeyboardButton("⚙️ لوحة تحكم الرادار"))
-    bot.reply_to(m, "مرحباً بك في رادار الحيتان المُحسن 🐋!\n🚀 تم تفعيل الذاكرة السحابية، كاشف كوازمودو المتوازي، ونظام الإدارة السريعة للفرص.", reply_markup=markup)
+    bot.reply_to(m, "مرحباً بك في رادار الحيتان المُحسن 🐋!\n🚀 تم تفعيل الذاكرة السحابية، كاشف كوازمودو المخفف لتناسب السيرفرات، ونظام الإدارة السريعة للفرص.", reply_markup=markup)
 
-# 🔍 كاشف كوازمودو المنفصل والسريع للغاية (يعمل بالتوازي)
 @bot.message_handler(func=lambda m: "كوازمودو" in m.text.strip())
 def find_quasimodo_only(m):
     market = "sa" if "سعودي" in m.text else "us"
     m_name = "السعودي 🇸🇦" if market == "sa" else "الأمريكي 🇺🇸"
-    msg = bot.reply_to(m, f"🔍 **جاري تشغيل كاشف كوازمودو في السوق {m_name}...**\n⚡ تم تفعيل محرك الفحص السريع الخوارزمي...")
+    msg = bot.reply_to(m, f"🔍 **جاري تشغيل كاشف كوازمودو في السوق {m_name}...**\n⚡ تم تفعيل محرك الفحص المتوازي (المخفف لمنع التجمد)...")
     
     target_watchlist = [item for item in WATCHLIST if (market == "sa" and item[0].endswith(".SR")) or (market == "us" and not item[0].endswith(".SR"))]
     
@@ -581,10 +572,12 @@ def find_quasimodo_only(m):
         except: pass
         return None
 
-    # مسح فائق السرعة عبر 15 معالج خيطي لمنع التجمد تماماً!
-    with ThreadPoolExecutor(max_workers=15) as executor:
+    # مسح متوازي هادئ يناسب 512 ميجا رام
+    with ThreadPoolExecutor(max_workers=3) as executor:
         results = list(executor.map(scan_for_qm, target_watchlist))
         
+    gc.collect() # 🧹 أمر تنظيف الرام فوراً بعد انتهاء الفحص
+    
     qm_found = [r for r in results if r is not None]
     
     if not qm_found:
@@ -600,7 +593,6 @@ def find_quasimodo_only(m):
     try: bot.edit_message_text(chat_id=m.chat.id, message_id=msg.message_id, text=reply, parse_mode="Markdown")
     except: bot.send_message(m.chat.id, reply, parse_mode="Markdown")
 
-# 📊 التقرير اليومي التفصيلي للذكاء الاصطناعي وذاكرة كوازمودو
 @bot.message_handler(func=lambda m: m.text.strip() == "📊 التقرير اليومي للـ AI")
 def show_daily_ai_report(m):
     today_str = date.today().strftime('%Y-%m-%d')
@@ -681,18 +673,16 @@ def show_todays_picks(m):
         for idx, (t, act) in enumerate(todays_picks.items(), 1): reply += f"{idx}. {get_display_name(t)} ⬅️ **{act}**\n"
         bot.reply_to(m, reply, parse_mode="Markdown")
 
-# 🚀 مسح شامل فائق السرعة لمنع التجمد
 @bot.message_handler(func=lambda m: "تصفية شاملة" in m.text.strip())
 def find_best_confluence(m):
     check_new_day()
     market = "sa" if "سعودي" in m.text else "us"
     m_name = "السعودي 🇸🇦" if market == "sa" else "الأمريكي 🇺🇸 (خيارات 1H)"
-    msg = bot.reply_to(m, f"🔍 **جاري بدء المسح الشامل للسوق {m_name}...**\n⚡ تم تفعيل وضع التيربو والمحرك المتوازي لمنع التجمد!")
+    msg = bot.reply_to(m, f"🔍 **جاري بدء المسح الشامل للسوق {m_name}...**\n⚡ تم تفعيل وضع المسح الموزون (متوافق مع السيرفرات)...")
 
     buys, sells = [], []
     error_count = 0
     target_watchlist = [item for item in WATCHLIST if (market == "sa" and item[0].endswith(".SR")) or (market == "us" and not item[0].endswith(".SR"))]
-    total = len(target_watchlist)
 
     def scan_single(item):
         t, interval = item
@@ -701,9 +691,11 @@ def find_best_confluence(m):
         except:
             return {"error": "timeout", "ticker": t}
 
-    # فحص متوازي لـ 10 أسهم دفعة واحدة
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    # فحص متوازي لـ 3 أسهم دفعة واحدة
+    with ThreadPoolExecutor(max_workers=3) as executor:
         results = list(executor.map(scan_single, target_watchlist))
+        
+    gc.collect() # 🧹 تنظيف الذاكرة
 
     for res in results:
         if res and "error" not in res:
@@ -736,7 +728,6 @@ def find_best_confluence(m):
     try: bot.edit_message_text(chat_id=m.chat.id, message_id=msg.message_id, text=reply, parse_mode="Markdown")
     except: bot.send_message(m.chat.id, reply, parse_mode="Markdown")
 
-# التحكم بإضافة وإدارة الأسهم يدوياً
 @bot.message_handler(commands=['add'])
 def add_stock(m):
     try:
@@ -789,7 +780,7 @@ def analyze_manual_stock(m):
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return "🚀 البوت السحابي فائق السرعة يعمل بنجاح!"
+def home(): return "🚀 البوت السحابي الموزون يعمل بنجاح ومحمي من الانهيار!"
 
 def run_server():
     port = int(os.environ.get("PORT", 8080))
