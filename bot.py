@@ -13,11 +13,11 @@ from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 
 warnings.filterwarnings('ignore')
 
-# التوكن الخاص بك
 TOKEN = "8666366975:AAFaapaj0XAHUO8-6PbzzNY0GGWiit0bKsk"
 bot = telebot.TeleBot(TOKEN)
 
-WATCHLIST = [
+# هذه القائمة الأساسية (الافتراضية) في حال كانت الذاكرة فارغة
+DEFAULT_WATCHLIST = [
     ("TSLA", "1h"), ("NVDA", "1h"), ("GOOGL", "1h"), ("MSTR", "1h"),
     ("MSFT", "1h"), ("CRM", "1h"), ("ORCL", "1h"), ("AMZN", "1h"),
     ("AAPL", "1h"), ("AVGO", "1h"), ("ARM", "1h"), ("LLY", "1h"),
@@ -73,20 +73,18 @@ ARABIC_TICKERS = {
     "اليانز": "8040.SR", "الدرع العربي": "8070.SR", "تكافل الراجحي": "8230.SR"
 }
 
-# إعدادات الرادار
+# المتغيرات الديناميكية
+WATCHLIST = [] # ستصبح قائمة ديناميكية تُحفظ في الذاكرة
 radar_settings = {"sa": True, "us": True, "market": True, "sniper": True}
-
 subscribed_chats = set()
 todays_picks = {}
 todays_sniper_picks = {} 
 retest_alerts = {} 
 notified_retests = set() 
 last_update_date = date.today()
-
-# 🧠 قواعد بيانات الذكاء الاصطناعي والتقييم الذاتي
 active_trades = {} 
 trade_history = {"wins": 0, "losses": 0, "log": []} 
-ai_learned_patterns = [] # الذاكرة الجديدة للنماذج المكتشفة
+ai_learned_patterns = [] 
 
 DB_FILE = "bot_database.json"
 
@@ -97,7 +95,8 @@ def save_database():
             "trade_history": trade_history,
             "retest_alerts": retest_alerts,
             "subscribed_chats": list(subscribed_chats),
-            "ai_learned_patterns": ai_learned_patterns
+            "ai_learned_patterns": ai_learned_patterns,
+            "watchlist": WATCHLIST # 🧠 حفظ القائمة الديناميكية
         }
         with open(DB_FILE, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
@@ -105,7 +104,7 @@ def save_database():
         print(f"Error saving DB: {e}")
 
 def load_database():
-    global active_trades, trade_history, retest_alerts, subscribed_chats, ai_learned_patterns
+    global active_trades, trade_history, retest_alerts, subscribed_chats, ai_learned_patterns, WATCHLIST
     try:
         if os.path.exists(DB_FILE):
             with open(DB_FILE, 'r', encoding='utf-8') as f:
@@ -115,7 +114,17 @@ def load_database():
                 retest_alerts.update(data.get("retest_alerts", {}))
                 subscribed_chats.update(data.get("subscribed_chats", []))
                 ai_learned_patterns = data.get("ai_learned_patterns", [])
+                
+                # 🧠 استرجاع القائمة إذا كانت موجودة، وإلا نستخدم الافتراضية
+                saved_watchlist = data.get("watchlist", [])
+                if saved_watchlist:
+                    WATCHLIST = [tuple(x) for x in saved_watchlist]
+                else:
+                    WATCHLIST = DEFAULT_WATCHLIST.copy()
+        else:
+            WATCHLIST = DEFAULT_WATCHLIST.copy()
     except Exception as e:
+        WATCHLIST = DEFAULT_WATCHLIST.copy()
         print(f"Error loading DB: {e}")
 
 def get_display_name(ticker):
@@ -194,7 +203,6 @@ def get_analysis_data(ticker, interval):
         
     return {"trend": trend, "models": models, "label": label}
 
-# دالة مخصصة للتحقق من اختراق 4 ساعات وإغلاق شمعتين
 def check_4h_breakout(ticker):
     try:
         df_4h = fetch_yahoo_data(ticker, "4h")
@@ -211,14 +219,12 @@ def check_4h_breakout(ticker):
     except: return None
     return None
 
-# 🧠 محرك الاستكشاف والتعلم الذاتي
 def ai_market_study():
     global ai_learned_patterns
     for ticker, interval in WATCHLIST:
         try:
             df = fetch_yahoo_data(ticker, interval)
             if df.empty or len(df) < 50: continue
-            # البحث عن انفجار سعري (> 4%)
             if (df['Close'].iloc[-1] / df['Close'].iloc[-2] - 1) > 0.04:
                 pattern_fingerprint = f"Pattern_{datetime.now().strftime('%m%d')}_{ticker}"
                 if pattern_fingerprint not in ai_learned_patterns:
@@ -264,7 +270,6 @@ def get_immediate_signal(ticker, interval="1d", record_alert=False):
         is_qm_bull = (df['Sweep_Bull'].tail(5).any()) and (df['CHoCH_Bull'].iloc[-1])
         is_qm_bear = (df['Sweep_Bear'].tail(5).any()) and (df['CHoCH_Bear'].iloc[-1])
         
-        # 🚀 إضافة التحقق من اختراق وإغلاق شمعتين 4 ساعات
         breakout_4h = check_4h_breakout(ticker)
         retest_level = None
         if breakout_4h:
@@ -275,7 +280,6 @@ def get_immediate_signal(ticker, interval="1d", record_alert=False):
                 bear.append(f"برايس أكشن: {breakout_4h['type']}")
                 retest_level = breakout_4h['level']
         
-        # 🧠 التحقق من بصمات الـ AI المكتشفة
         if any(ticker in p for p in ai_learned_patterns): 
             bull.append("🧠 الذكاء الاصطناعي: السهم يطابق بصمة نموذج مكتشف ذاتياً")
 
@@ -373,9 +377,7 @@ def format_msg(res):
 
 def auto_scanner():
     while True:
-        # فحص دوري للتعلم الذاتي وتحديث البصمات (مرة كل دورة)
         ai_market_study()
-        
         if subscribed_chats:
             for ticker, interval in WATCHLIST:
                 try:
@@ -386,7 +388,6 @@ def auto_scanner():
                     df_current = fetch_yahoo_data(ticker, interval)
                     current_p = float(df_current['Close'].iloc[-1])
 
-                    # 1. نظام القناص (مراقبة التنفيذ)
                     if radar_settings["sniper"] and ticker in retest_alerts and (ticker, date.today()) not in notified_retests:
                         target_info = retest_alerts[ticker]
                         target_price = target_info["price"]
@@ -404,7 +405,6 @@ def auto_scanner():
                             del retest_alerts[ticker]
                             save_database() 
 
-                    # 2. 🧠 نظام التقييم الذاتي
                     if ticker in active_trades:
                         trade = active_trades[ticker]
                         trade_closed = False
@@ -435,7 +435,6 @@ def auto_scanner():
                             del active_trades[ticker]
                             save_database()
 
-                    # 3. رادار النماذج
                     if radar_settings["market"]:
                         res = get_immediate_signal(ticker, interval, record_alert=True)
                         if res and "error" not in res and ("فوري" in res['action']):
@@ -470,13 +469,14 @@ def start(m):
     markup.add(KeyboardButton("🇸🇦 تصفية شاملة (سعودي)"), KeyboardButton("🇺🇸 تصفية شاملة (أمريكي)"))
     markup.add(KeyboardButton("⚙️ لوحة تحكم الرادار"), KeyboardButton("🎯 أسهم القناص (اليوم)"))
     markup.add(KeyboardButton("📋 أسهم قائمة التصفيات"), KeyboardButton("📊 أداء الذكاء الاصطناعي"))
-    bot.reply_to(m, "مرحباً بك في رادار الحيتان المُحسن!\n🚀 تم تفعيل الذاكرة الصلبة ومحرك الاستكشاف الذاتي.", reply_markup=markup)
+    bot.reply_to(m, "مرحباً بك في رادار الحيتان المُحسن!\n🚀 تم تفعيل الذاكرة الصلبة، القناص، والتعلم الذاتي. جرب كتابة اسم أي سهم لتحليله وإضافته للقائمة تلقائياً!", reply_markup=markup)
 
 @bot.message_handler(func=lambda m: m.text.strip() == "📊 أداء الذكاء الاصطناعي")
 def show_ai_performance(m):
     total = trade_history['wins'] + trade_history['losses']
     reply = f"🧠 **سجل الذكاء الاصطناعي والتعلم الذاتي:**\n\n"
     reply += f"🤖 النماذج الجديدة التي اكتشفها البوت بنفسه: {len(ai_learned_patterns)}\n"
+    reply += f"📋 حجم قائمة المراقبة حالياً: {len(WATCHLIST)} سهم\n"
     
     if total == 0:
         reply += "\n🤖 **تقييم الصفقات:** لا تزال الآلة تجمع البيانات ولم يتم إغلاق أي صفقة للقناص حتى الآن."
@@ -580,19 +580,29 @@ def analyze_manual_stock(m):
     text = m.text.strip().upper()
     ignore = ["🇸🇦 تصفية شاملة (سعودي)", "🇺🇸 تصفية شاملة (أمريكي)", "⚙️ لوحة تحكم الرادار", "🎯 أسهم القناص (اليوم)", "📋 أسهم قائمة التصفيات", "📊 أداء الذكاء الاصطناعي"]
     if text in ignore or text.startswith("/"): return
+    
+    # محاولة جلب التيكر سواء كان اسم أو رمز
     t = ARABIC_TICKERS.get(text.replace("أ", "ا").replace("إ", "ا").replace("ة", "ه"), text)
     if t.isdigit() and len(t) == 4: t += ".SR"
 
     msg = bot.reply_to(m, f"⏳ جاري الفحص المعمق لـ {text}...")
-    res = get_immediate_signal(t, "1d" if t.endswith(".SR") else "1h", record_alert=True)
+    interval = "1d" if t.endswith(".SR") else "1h"
+    res = get_immediate_signal(t, interval, record_alert=True)
+    
     if res and "error" not in res:
         bot.edit_message_text(chat_id=m.chat.id, message_id=msg.message_id, text=format_msg(res), parse_mode="Markdown")
+        
+        # 🧠 الميزة الجديدة: إدراج السهم تلقائياً في قائمة المراقبة إذا لم يكن موجوداً
+        if not any(item[0] == t for item in WATCHLIST):
+            WATCHLIST.append((t, interval))
+            save_database() # حفظ التغيير في الذاكرة الصلبة
+            bot.send_message(m.chat.id, f"✅ **تم تحديث الذاكرة:**\nتم إدراج السهم ({t}) تلقائياً في رادار القناص والذكاء الاصطناعي للمراقبة المستمرة!", parse_mode="Markdown")
     else:
-        bot.edit_message_text(chat_id=m.chat.id, message_id=msg.message_id, text=f"⚠️ تعذر تحليل السهم.\n**السبب:** {res.get('error', 'السهم غير مدرج أو بيانات غير كافية.')}")
+        bot.edit_message_text(chat_id=m.chat.id, message_id=msg.message_id, text=f"⚠️ تعذر تحليل السهم.\n**السبب:** {res.get('error', 'السهم غير مدرج أو البيانات غير كافية.')}")
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return "🚀 البوت يعمل بنجاح على السيرفر ومزود بذاكرة صلبة!"
+def home(): return "🚀 البوت يعمل بنجاح ومزود بخاصية الإضافة التلقائية للأسهم!"
 
 def run_server():
     port = int(os.environ.get("PORT", 8080))
@@ -602,13 +612,10 @@ threading.Thread(target=run_server, daemon=True).start()
 
 print("=== جاري استرجاع الذاكرة الدائمة ===")
 load_database()
-print(f"تم استرجاع {len(active_trades)} صفقات مفتوحة و {len(retest_alerts)} تنبيهات قناص و {len(ai_learned_patterns)} نماذج ذكاء اصطناعي.")
+print(f"تم استرجاع قائمة أسهم بحجم: {len(WATCHLIST)} سهم.")
 
 print("=== تم التشغيل بنجاح ===")
 threading.Thread(target=auto_scanner, daemon=True).start()
 
-# --- الإصلاح الجديد لمنع تعارض 409 ---
 bot.remove_webhook()
-# -------------------------------------
-
 bot.polling(none_stop=True)
