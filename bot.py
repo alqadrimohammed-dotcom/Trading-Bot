@@ -6,17 +6,28 @@ import threading
 import time
 import warnings
 import os
-import json
 from flask import Flask
 from datetime import datetime, date
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from pymongo import MongoClient
 
 warnings.filterwarnings('ignore')
 
 TOKEN = "8666366975:AAFaapaj0XAHUO8-6PbzzNY0GGWiit0bKsk"
 bot = telebot.TeleBot(TOKEN)
 
-# هذه القائمة الأساسية (الافتراضية) في حال كانت الذاكرة فارغة
+# ==========================================
+# ☁️ إعدادات الاتصال بقاعدة البيانات السحابية
+# ==========================================
+MONGO_URI = "mongodb+srv://alqadrmohammed:20548468@cluster0.hqowmwu.mongodb.net/?appName=Cluster0"
+try:
+    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+    db = client['TradingBotDB']
+    data_collection = db['bot_data']
+    print("✅ تم الاتصال بقاعدة البيانات السحابية (MongoDB) بنجاح!")
+except Exception as e:
+    print(f"❌ خطأ في الاتصال بقاعدة البيانات: {e}")
+
 DEFAULT_WATCHLIST = [
     ("TSLA", "1h"), ("NVDA", "1h"), ("GOOGL", "1h"), ("MSTR", "1h"),
     ("MSFT", "1h"), ("CRM", "1h"), ("ORCL", "1h"), ("AMZN", "1h"),
@@ -73,8 +84,7 @@ ARABIC_TICKERS = {
     "اليانز": "8040.SR", "الدرع العربي": "8070.SR", "تكافل الراجحي": "8230.SR"
 }
 
-# المتغيرات الديناميكية
-WATCHLIST = [] # ستصبح قائمة ديناميكية تُحفظ في الذاكرة
+WATCHLIST = [] 
 radar_settings = {"sa": True, "us": True, "market": True, "sniper": True}
 subscribed_chats = set()
 todays_picks = {}
@@ -86,46 +96,44 @@ active_trades = {}
 trade_history = {"wins": 0, "losses": 0, "log": []} 
 ai_learned_patterns = [] 
 
-DB_FILE = "bot_database.json"
-
 def save_database():
     try:
         data = {
+            "_id": "main_data",
             "active_trades": active_trades,
             "trade_history": trade_history,
             "retest_alerts": retest_alerts,
             "subscribed_chats": list(subscribed_chats),
             "ai_learned_patterns": ai_learned_patterns,
-            "watchlist": WATCHLIST # 🧠 حفظ القائمة الديناميكية
+            "watchlist": WATCHLIST 
         }
-        with open(DB_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
+        # حفظ أو تحديث البيانات في السحابة
+        data_collection.update_one({"_id": "main_data"}, {"$set": data}, upsert=True)
     except Exception as e:
-        print(f"Error saving DB: {e}")
+        print(f"Error saving to MongoDB: {e}")
 
 def load_database():
     global active_trades, trade_history, retest_alerts, subscribed_chats, ai_learned_patterns, WATCHLIST
     try:
-        if os.path.exists(DB_FILE):
-            with open(DB_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                active_trades.update(data.get("active_trades", {}))
-                trade_history.update(data.get("trade_history", {"wins": 0, "losses": 0, "log": []}))
-                retest_alerts.update(data.get("retest_alerts", {}))
-                subscribed_chats.update(data.get("subscribed_chats", []))
-                ai_learned_patterns = data.get("ai_learned_patterns", [])
-                
-                # 🧠 استرجاع القائمة إذا كانت موجودة، وإلا نستخدم الافتراضية
-                saved_watchlist = data.get("watchlist", [])
-                if saved_watchlist:
-                    WATCHLIST = [tuple(x) for x in saved_watchlist]
-                else:
-                    WATCHLIST = DEFAULT_WATCHLIST.copy()
+        doc = data_collection.find_one({"_id": "main_data"})
+        if doc:
+            active_trades.update(doc.get("active_trades", {}))
+            trade_history.update(doc.get("trade_history", {"wins": 0, "losses": 0, "log": []}))
+            retest_alerts.update(doc.get("retest_alerts", {}))
+            subscribed_chats.update(doc.get("subscribed_chats", []))
+            ai_learned_patterns = doc.get("ai_learned_patterns", [])
+            
+            saved_watchlist = doc.get("watchlist", [])
+            if saved_watchlist:
+                WATCHLIST = [tuple(x) for x in saved_watchlist]
+            else:
+                WATCHLIST = DEFAULT_WATCHLIST.copy()
         else:
             WATCHLIST = DEFAULT_WATCHLIST.copy()
+            save_database() # إنشاء الملف الأول في السحابة
     except Exception as e:
         WATCHLIST = DEFAULT_WATCHLIST.copy()
-        print(f"Error loading DB: {e}")
+        print(f"Error loading from MongoDB: {e}")
 
 def get_display_name(ticker):
     for name, t in ARABIC_TICKERS.items():
@@ -461,6 +469,39 @@ def get_radar_markup():
     markup.add(btn_sa, btn_us, btn_market, btn_sniper)
     return markup
 
+# أوامر الإدارة الديناميكية للأسهم (بدون تعديل الكود)
+@bot.message_handler(commands=['add'])
+def add_stock(m):
+    try:
+        parts = m.text.split()
+        if len(parts) < 3:
+            bot.reply_to(m, "⚠️ صيغة خاطئة! استخدم: `/add [الرمز] [الفريم]`\nمثال: `/add AAPL 1h`", parse_mode="Markdown")
+            return
+        symbol, interval = parts[1].upper(), parts[2]
+        # إضافة السهم وتحديث قاعدة البيانات السحابية
+        if not any(x[0] == symbol for x in WATCHLIST):
+            WATCHLIST.append((symbol, interval))
+            save_database()
+            bot.reply_to(m, f"✅ تم إضافة السهم {symbol} ({interval}) لقاعدة البيانات السحابية!")
+        else:
+            bot.reply_to(m, f"⚠️ السهم {symbol} موجود مسبقاً في القائمة.")
+    except Exception as e: bot.reply_to(m, f"❌ حدث خطأ: {e}")
+
+@bot.message_handler(commands=['remove'])
+def remove_stock(m):
+    try:
+        symbol = m.text.split()[1].upper()
+        global WATCHLIST
+        WATCHLIST = [x for x in WATCHLIST if x[0] != symbol]
+        save_database()
+        bot.reply_to(m, f"🗑️ تم حذف {symbol} من قاعدة البيانات السحابية بنجاح.")
+    except: bot.reply_to(m, "⚠️ استخدم: `/remove [الرمز]`", parse_mode="Markdown")
+
+@bot.message_handler(commands=['list'])
+def list_stocks(m):
+    msg = "📋 **الأسهم المحفوظة في السحابة حالياً:**\n" + "\n".join([f"▪️ {x[0]} ({x[1]})" for x in WATCHLIST])
+    bot.reply_to(m, msg, parse_mode="Markdown")
+
 @bot.message_handler(commands=['start'])
 def start(m):
     subscribed_chats.add(m.chat.id)
@@ -469,14 +510,14 @@ def start(m):
     markup.add(KeyboardButton("🇸🇦 تصفية شاملة (سعودي)"), KeyboardButton("🇺🇸 تصفية شاملة (أمريكي)"))
     markup.add(KeyboardButton("⚙️ لوحة تحكم الرادار"), KeyboardButton("🎯 أسهم القناص (اليوم)"))
     markup.add(KeyboardButton("📋 أسهم قائمة التصفيات"), KeyboardButton("📊 أداء الذكاء الاصطناعي"))
-    bot.reply_to(m, "مرحباً بك في رادار الحيتان المُحسن!\n🚀 تم تفعيل الذاكرة الصلبة، القناص، والتعلم الذاتي. جرب كتابة اسم أي سهم لتحليله وإضافته للقائمة تلقائياً!", reply_markup=markup)
+    bot.reply_to(m, "مرحباً بك في رادار الحيتان المُحسن!\n🚀 تم ربط البوت بـ (MongoDB Cloud). الذاكرة الآن مستدامة ولن تفقد أي سهم أو صفقة بعد الآن!", reply_markup=markup)
 
 @bot.message_handler(func=lambda m: m.text.strip() == "📊 أداء الذكاء الاصطناعي")
 def show_ai_performance(m):
     total = trade_history['wins'] + trade_history['losses']
     reply = f"🧠 **سجل الذكاء الاصطناعي والتعلم الذاتي:**\n\n"
     reply += f"🤖 النماذج الجديدة التي اكتشفها البوت بنفسه: {len(ai_learned_patterns)}\n"
-    reply += f"📋 حجم قائمة المراقبة حالياً: {len(WATCHLIST)} سهم\n"
+    reply += f"☁️ حجم القائمة السحابية حالياً: {len(WATCHLIST)} سهم\n"
     
     if total == 0:
         reply += "\n🤖 **تقييم الصفقات:** لا تزال الآلة تجمع البيانات ولم يتم إغلاق أي صفقة للقناص حتى الآن."
@@ -581,7 +622,6 @@ def analyze_manual_stock(m):
     ignore = ["🇸🇦 تصفية شاملة (سعودي)", "🇺🇸 تصفية شاملة (أمريكي)", "⚙️ لوحة تحكم الرادار", "🎯 أسهم القناص (اليوم)", "📋 أسهم قائمة التصفيات", "📊 أداء الذكاء الاصطناعي"]
     if text in ignore or text.startswith("/"): return
     
-    # محاولة جلب التيكر سواء كان اسم أو رمز
     t = ARABIC_TICKERS.get(text.replace("أ", "ا").replace("إ", "ا").replace("ة", "ه"), text)
     if t.isdigit() and len(t) == 4: t += ".SR"
 
@@ -592,17 +632,17 @@ def analyze_manual_stock(m):
     if res and "error" not in res:
         bot.edit_message_text(chat_id=m.chat.id, message_id=msg.message_id, text=format_msg(res), parse_mode="Markdown")
         
-        # 🧠 الميزة الجديدة: إدراج السهم تلقائياً في قائمة المراقبة إذا لم يكن موجوداً
+        # حفظ السهم السحابي تلقائياً
         if not any(item[0] == t for item in WATCHLIST):
             WATCHLIST.append((t, interval))
-            save_database() # حفظ التغيير في الذاكرة الصلبة
-            bot.send_message(m.chat.id, f"✅ **تم تحديث الذاكرة:**\nتم إدراج السهم ({t}) تلقائياً في رادار القناص والذكاء الاصطناعي للمراقبة المستمرة!", parse_mode="Markdown")
+            save_database() 
+            bot.send_message(m.chat.id, f"☁️ **تم تحديث السحابة:**\nتم إدراج السهم ({t}) تلقائياً في قاعدة البيانات للمراقبة المستمرة!", parse_mode="Markdown")
     else:
         bot.edit_message_text(chat_id=m.chat.id, message_id=msg.message_id, text=f"⚠️ تعذر تحليل السهم.\n**السبب:** {res.get('error', 'السهم غير مدرج أو البيانات غير كافية.')}")
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return "🚀 البوت يعمل بنجاح ومزود بخاصية الإضافة التلقائية للأسهم!"
+def home(): return "🚀 البوت السحابي يعمل بنجاح ومزود بذاكرة MongoDB الدائمة!"
 
 def run_server():
     port = int(os.environ.get("PORT", 8080))
@@ -610,9 +650,9 @@ def run_server():
 
 threading.Thread(target=run_server, daemon=True).start()
 
-print("=== جاري استرجاع الذاكرة الدائمة ===")
+print("=== جاري استرجاع البيانات من السحابة (MongoDB) ===")
 load_database()
-print(f"تم استرجاع قائمة أسهم بحجم: {len(WATCHLIST)} سهم.")
+print(f"تم استرجاع قائمة أسهم بحجم: {len(WATCHLIST)} سهم بنجاح.")
 
 print("=== تم التشغيل بنجاح ===")
 threading.Thread(target=auto_scanner, daemon=True).start()
