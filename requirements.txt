@@ -4,3 +4,5 @@ numpy
 cloudscraper
 Flask
 pymongo[srv]
+pymongo
+dnspython
