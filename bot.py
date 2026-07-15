@@ -6,28 +6,37 @@ import threading
 import time
 import warnings
 import os
+import json
+import pymongo # 🚀 الذاكرة السحابية الاحترافية
+from concurrent.futures import ThreadPoolExecutor # 🚀 التيربو لمنع تجمد الفحص
 from flask import Flask
 from datetime import datetime, date
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-from pymongo import MongoClient
 
 warnings.filterwarnings('ignore')
 
 TOKEN = "8666366975:AAFaapaj0XAHUO8-6PbzzNY0GGWiit0bKsk"
 bot = telebot.TeleBot(TOKEN)
 
-# ==========================================
-# ☁️ إعدادات الاتصال بقاعدة البيانات السحابية
-# ==========================================
-MONGO_URI = "mongodb+srv://alqadrmohammed:20548468@cluster0.hqowmwu.mongodb.net/?appName=Cluster0"
-try:
-    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-    db = client['TradingBotDB']
-    data_collection = db['bot_data']
-    print("✅ تم الاتصال بقاعدة البيانات السحابية (MongoDB) بنجاح!")
-except Exception as e:
-    print(f"❌ خطأ في الاتصال بقاعدة البيانات: {e}")
+# 🌐 اتصال قاعدة البيانات السحابية (MongoDB)
+# يمكنك وضع الرابط هنا، أو الأفضل أمنياً وضعه في (Config Vars) في Render باسم MONGO_URI
+MONGO_URI = os.environ.get("MONGO_URI", "YOUR_MONGODB_CONNECTION_STRING_HERE")
 
+mongo_connected = False
+try:
+    if "YOUR_MONGODB_CONNECTION" not in MONGO_URI and "mongodb+srv" in MONGO_URI:
+        client = pymongo.MongoClient(MONGO_URI)
+        db = client["whale_radar_db"]
+        state_col = db["bot_state"]
+        quasimodo_col = db["daily_quasimodo"]
+        mongo_connected = True
+        print("🟢 تم الاتصال بنجاح بقاعدة البيانات السحابية MongoDB Atlas!")
+    else:
+        print("⚠️ لم يتم العثور على رابط MongoDB صالح. البوت سيعمل مؤقتاً بالذاكرة المحلية.")
+except Exception as e:
+    print(f"❌ فشل الاتصال بـ MongoDB: {e}")
+
+# قائمة الأسهم الافتراضية
 DEFAULT_WATCHLIST = [
     ("TSLA", "1h"), ("NVDA", "1h"), ("GOOGL", "1h"), ("MSTR", "1h"),
     ("MSFT", "1h"), ("CRM", "1h"), ("ORCL", "1h"), ("AMZN", "1h"),
@@ -84,7 +93,7 @@ ARABIC_TICKERS = {
     "اليانز": "8040.SR", "الدرع العربي": "8070.SR", "تكافل الراجحي": "8230.SR"
 }
 
-WATCHLIST = [] 
+WATCHLIST = []
 radar_settings = {"sa": True, "us": True, "market": True, "sniper": True}
 subscribed_chats = set()
 todays_picks = {}
@@ -95,45 +104,104 @@ last_update_date = date.today()
 active_trades = {} 
 trade_history = {"wins": 0, "losses": 0, "log": []} 
 ai_learned_patterns = [] 
+in_memory_daily_quasimodo = {} # ذاكرة احتياطية لليوم في حال عدم الاتصال بـ Mongo
 
+DB_FILE = "bot_database.json"
+
+# 💾 حفظ الذاكرة (سحابياً بـ MongoDB أو محلياً بـ JSON كاحتياط)
 def save_database():
-    try:
-        data = {
-            "_id": "main_data",
-            "active_trades": active_trades,
-            "trade_history": trade_history,
-            "retest_alerts": retest_alerts,
-            "subscribed_chats": list(subscribed_chats),
-            "ai_learned_patterns": ai_learned_patterns,
-            "watchlist": WATCHLIST 
-        }
-        # حفظ أو تحديث البيانات في السحابة
-        data_collection.update_one({"_id": "main_data"}, {"$set": data}, upsert=True)
-    except Exception as e:
-        print(f"Error saving to MongoDB: {e}")
+    global WATCHLIST, active_trades, trade_history, retest_alerts, subscribed_chats, ai_learned_patterns
+    data = {
+        "active_trades": active_trades,
+        "trade_history": trade_history,
+        "retest_alerts": retest_alerts,
+        "subscribed_chats": list(subscribed_chats),
+        "ai_learned_patterns": ai_learned_patterns,
+        "watchlist": WATCHLIST
+    }
+    if mongo_connected:
+        try:
+            state_col.update_one({"_id": "bot_config"}, {"$set": data}, upsert=True)
+        except Exception as e:
+            print(f"Error saving to MongoDB: {e}")
+    else:
+        try:
+            with open(DB_FILE, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            print(f"Error saving DB: {e}")
 
+# 💾 استرجاع الذاكرة عند بدء التشغيل
 def load_database():
     global active_trades, trade_history, retest_alerts, subscribed_chats, ai_learned_patterns, WATCHLIST
-    try:
-        doc = data_collection.find_one({"_id": "main_data"})
-        if doc:
-            active_trades.update(doc.get("active_trades", {}))
-            trade_history.update(doc.get("trade_history", {"wins": 0, "losses": 0, "log": []}))
-            retest_alerts.update(doc.get("retest_alerts", {}))
-            subscribed_chats.update(doc.get("subscribed_chats", []))
-            ai_learned_patterns = doc.get("ai_learned_patterns", [])
+    if mongo_connected:
+        try:
+            data = state_col.find_one({"_id": "bot_config"})
+            if data:
+                active_trades.update(data.get("active_trades", {}))
+                trade_history.update(data.get("trade_history", {"wins": 0, "losses": 0, "log": []}))
+                retest_alerts.update(data.get("retest_alerts", {}))
+                subscribed_chats.update(data.get("subscribed_chats", []))
+                ai_learned_patterns = data.get("ai_learned_patterns", [])
+                saved_watchlist = data.get("watchlist", [])
+                if saved_watchlist:
+                    WATCHLIST = [tuple(x) for x in saved_watchlist]
+                else:
+                    WATCHLIST = DEFAULT_WATCHLIST.copy()
+                return
+        except Exception as e:
+            print(f"Error loading from MongoDB: {e}")
             
-            saved_watchlist = doc.get("watchlist", [])
-            if saved_watchlist:
-                WATCHLIST = [tuple(x) for x in saved_watchlist]
-            else:
-                WATCHLIST = DEFAULT_WATCHLIST.copy()
+    # الاحتياط المحلي
+    try:
+        if os.path.exists(DB_FILE):
+            with open(DB_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                active_trades.update(data.get("active_trades", {}))
+                trade_history.update(data.get("trade_history", {"wins": 0, "losses": 0, "log": []}))
+                retest_alerts.update(data.get("retest_alerts", {}))
+                subscribed_chats.update(data.get("subscribed_chats", []))
+                ai_learned_patterns = data.get("ai_learned_patterns", [])
+                saved_watchlist = data.get("watchlist", [])
+                if saved_watchlist:
+                    WATCHLIST = [tuple(x) for x in saved_watchlist]
+                else:
+                    WATCHLIST = DEFAULT_WATCHLIST.copy()
         else:
             WATCHLIST = DEFAULT_WATCHLIST.copy()
-            save_database() # إنشاء الملف الأول في السحابة
     except Exception as e:
         WATCHLIST = DEFAULT_WATCHLIST.copy()
-        print(f"Error loading from MongoDB: {e}")
+        print(f"Error loading local DB: {e}")
+
+# 🧠 تدوين نماذج كوازمودو اليومية في الذاكرة
+def log_quasimodo_setup(ticker, name, direction, interval, price, details):
+    today_str = date.today().strftime('%Y-%m-%d')
+    setup_data = {
+        "ticker": ticker,
+        "name": name,
+        "direction": direction,
+        "interval": interval,
+        "price": price,
+        "details": details,
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    # 1. تدوين محلي بالرام
+    if today_str not in in_memory_daily_quasimodo:
+        in_memory_daily_quasimodo[today_str] = []
+    if not any(x['ticker'] == ticker and x['interval'] == interval and x['direction'] == direction for x in in_memory_daily_quasimodo[today_str]):
+        in_memory_daily_quasimodo[today_str].append(setup_data)
+        
+    # 2. تدوين سحابي في MongoDB لمنع الضياع
+    if mongo_connected:
+        try:
+            quasimodo_col.update_one(
+                {"date": today_str},
+                {"$addToSet": {"setups": setup_data}},
+                upsert=True
+            )
+        except Exception as e:
+            print(f"Error logging Quasimodo to MongoDB: {e}")
 
 def get_display_name(ticker):
     for name, t in ARABIC_TICKERS.items():
@@ -146,7 +214,7 @@ def fetch_yahoo_data(ticker, interval="1d", retries=2):
     scraper = cloudscraper.create_scraper()
     for _ in range(retries):
         try:
-            res = scraper.get(url, timeout=5)
+            res = scraper.get(url, timeout=3) # تقليص الانتظار لمنع أي تجمد
             if res.status_code == 200:
                 data = res.json()
                 if 'chart' in data and 'error' in data['chart'] and data['chart']['error']: continue
@@ -154,7 +222,7 @@ def fetch_yahoo_data(ticker, interval="1d", retries=2):
                 df = pd.DataFrame({'Open': result['indicators']['quote'][0]['open'], 'High': result['indicators']['quote'][0]['high'], 'Low': result['indicators']['quote'][0]['low'], 'Close': result['indicators']['quote'][0]['close'], 'Volume': result['indicators']['quote'][0]['volume']})
                 df.index = pd.to_datetime(result['timestamp'], unit='s')
                 return df.dropna()
-        except: time.sleep(0.5)
+        except: time.sleep(0.3)
     raise Exception("Connection Error")
 
 def get_analysis_data(ticker, interval):
@@ -200,15 +268,6 @@ def get_analysis_data(ticker, interval):
     if wyckoff_acc.iloc[-1] or wyckoff_acc.tail(3).any(): models.append("📊 تجميع")
     if wyckoff_dist.iloc[-1] or wyckoff_dist.tail(3).any(): models.append("📉 تصريف")
     
-    if len(df) >= 30:
-        x_20 = np.arange(20)
-        slope_high, _ = np.polyfit(x_20, df['High'].iloc[-20:].values, 1)
-        slope_low, _ = np.polyfit(x_20, df['Low'].iloc[-20:].values, 1)
-        converging = (df['High'].iloc[-20:].values[0] - df['Low'].iloc[-20:].values[0]) > (df['High'].iloc[-20:].values[-1] - df['Low'].iloc[-20:].values[-1])
-        if (slope_high < 0) and (slope_low < 0) and (slope_high < slope_low) and converging: models.append("📐 وتد هابط")
-        elif (slope_high > 0) and (slope_low > 0) and (slope_low > slope_high) and converging: models.append("📐 وتد صاعد")
-        elif (slope_high < 0) and (slope_low > 0) and converging: models.append("🔺 مثلث متماثل")
-        
     return {"trend": trend, "models": models, "label": label}
 
 def check_4h_breakout(ticker):
@@ -238,7 +297,6 @@ def ai_market_study():
                 if pattern_fingerprint not in ai_learned_patterns:
                     ai_learned_patterns.append(pattern_fingerprint)
                     save_database()
-                    print(f"🤖 AI اكتشف نموذجاً جديداً في {ticker}")
         except: pass
 
 def get_immediate_signal(ticker, interval="1d", record_alert=False):
@@ -275,9 +333,18 @@ def get_immediate_signal(ticker, interval="1d", record_alert=False):
         n_sup_val = float(daily['Low'].iloc[-2]) if (len(daily)>1 and float(daily['Low'].iloc[-2])<current_price) else round(current_price * 0.97, 2)
 
         bull, bear = [], []
+        
+        # 🚀 التحقق الكلي من كوازمودو + تسجيل الذكاء الاصطناعي اليومي
         is_qm_bull = (df['Sweep_Bull'].tail(5).any()) and (df['CHoCH_Bull'].iloc[-1])
         is_qm_bear = (df['Sweep_Bear'].tail(5).any()) and (df['CHoCH_Bear'].iloc[-1])
         
+        if is_qm_bull:
+            bull.append("👑 SMC: كوازمودو شرائي")
+            log_quasimodo_setup(ticker, get_display_name(ticker), "شرائي 🟢", interval, current_price, "كوازمودو صاعد (تصفية سيولة القاع مع اختراق CHoCH)")
+        elif is_qm_bear:
+            bear.append("👑 SMC: كوازمودو بيعي")
+            log_quasimodo_setup(ticker, get_display_name(ticker), "بيعي 🔴", interval, current_price, "كوازمودو هابط (تصفية سيولة القمة مع كسر CHoCH)")
+
         breakout_4h = check_4h_breakout(ticker)
         retest_level = None
         if breakout_4h:
@@ -453,11 +520,12 @@ def auto_scanner():
         time.sleep(600)
 
 def check_new_day():
-    global todays_picks, todays_sniper_picks, last_update_date, notified_retests
+    global todays_picks, todays_sniper_picks, last_update_date, notified_retests, in_memory_daily_quasimodo
     if date.today() > last_update_date:
         todays_picks.clear()
         todays_sniper_picks.clear()
         notified_retests.clear()
+        in_memory_daily_quasimodo = {date.today().strftime('%Y-%m-%d'): []} # مسح مخلفات الأمس لمنع امتلاء الرام
         last_update_date = date.today()
 
 def get_radar_markup():
@@ -469,67 +537,115 @@ def get_radar_markup():
     markup.add(btn_sa, btn_us, btn_market, btn_sniper)
     return markup
 
-# أوامر الإدارة الديناميكية للأسهم (بدون تعديل الكود)
-@bot.message_handler(commands=['add'])
-def add_stock(m):
-    try:
-        parts = m.text.split()
-        if len(parts) < 3:
-            bot.reply_to(m, "⚠️ صيغة خاطئة! استخدم: `/add [الرمز] [الفريم]`\nمثال: `/add AAPL 1h`", parse_mode="Markdown")
-            return
-        symbol, interval = parts[1].upper(), parts[2]
-        # إضافة السهم وتحديث قاعدة البيانات السحابية
-        if not any(x[0] == symbol for x in WATCHLIST):
-            WATCHLIST.append((symbol, interval))
-            save_database()
-            bot.reply_to(m, f"✅ تم إضافة السهم {symbol} ({interval}) لقاعدة البيانات السحابية!")
-        else:
-            bot.reply_to(m, f"⚠️ السهم {symbol} موجود مسبقاً في القائمة.")
-    except Exception as e: bot.reply_to(m, f"❌ حدث خطأ: {e}")
-
-@bot.message_handler(commands=['remove'])
-def remove_stock(m):
-    try:
-        symbol = m.text.split()[1].upper()
-        global WATCHLIST
-        WATCHLIST = [x for x in WATCHLIST if x[0] != symbol]
-        save_database()
-        bot.reply_to(m, f"🗑️ تم حذف {symbol} من قاعدة البيانات السحابية بنجاح.")
-    except: bot.reply_to(m, "⚠️ استخدم: `/remove [الرمز]`", parse_mode="Markdown")
-
-@bot.message_handler(commands=['list'])
-def list_stocks(m):
-    msg = "📋 **الأسهم المحفوظة في السحابة حالياً:**\n" + "\n".join([f"▪️ {x[0]} ({x[1]})" for x in WATCHLIST])
-    bot.reply_to(m, msg, parse_mode="Markdown")
-
 @bot.message_handler(commands=['start'])
 def start(m):
     subscribed_chats.add(m.chat.id)
     save_database()
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(KeyboardButton("🇸🇦 تصفية شاملة (سعودي)"), KeyboardButton("🇺🇸 تصفية شاملة (أمريكي)"))
-    markup.add(KeyboardButton("⚙️ لوحة تحكم الرادار"), KeyboardButton("🎯 أسهم القناص (اليوم)"))
-    markup.add(KeyboardButton("📋 أسهم قائمة التصفيات"), KeyboardButton("📊 أداء الذكاء الاصطناعي"))
-    bot.reply_to(m, "مرحباً بك في رادار الحيتان المُحسن!\n🚀 تم ربط البوت بـ (MongoDB Cloud). الذاكرة الآن مستدامة ولن تفقد أي سهم أو صفقة بعد الآن!", reply_markup=markup)
+    markup.add(KeyboardButton("🔍 كوازمودو سعودي 🇸🇦"), KeyboardButton("🔍 كوازمودو أمريكي 🇺🇸"))
+    markup.add(KeyboardButton("🎯 أسهم القناص (اليوم)"), KeyboardButton("📊 التقرير اليومي للـ AI"))
+    markup.add(KeyboardButton("📋 أسهم قائمة التصفيات"), KeyboardButton("⚙️ لوحة تحكم الرادار"))
+    bot.reply_to(m, "مرحباً بك في رادار الحيتان المُحسن 🐋!\n🚀 تم تفعيل الذاكرة السحابية، كاشف كوازمودو المتوازي، ونظام الإدارة السريعة للفرص.", reply_markup=markup)
 
-@bot.message_handler(func=lambda m: m.text.strip() == "📊 أداء الذكاء الاصطناعي")
-def show_ai_performance(m):
-    total = trade_history['wins'] + trade_history['losses']
-    reply = f"🧠 **سجل الذكاء الاصطناعي والتعلم الذاتي:**\n\n"
-    reply += f"🤖 النماذج الجديدة التي اكتشفها البوت بنفسه: {len(ai_learned_patterns)}\n"
-    reply += f"☁️ حجم القائمة السحابية حالياً: {len(WATCHLIST)} سهم\n"
+# 🔍 كاشف كوازمودو المنفصل والسريع للغاية (يعمل بالتوازي)
+@bot.message_handler(func=lambda m: "كوازمودو" in m.text.strip())
+def find_quasimodo_only(m):
+    market = "sa" if "سعودي" in m.text else "us"
+    m_name = "السعودي 🇸🇦" if market == "sa" else "الأمريكي 🇺🇸"
+    msg = bot.reply_to(m, f"🔍 **جاري تشغيل كاشف كوازمودو في السوق {m_name}...**\n⚡ تم تفعيل محرك الفحص السريع الخوارزمي...")
     
-    if total == 0:
-        reply += "\n🤖 **تقييم الصفقات:** لا تزال الآلة تجمع البيانات ولم يتم إغلاق أي صفقة للقناص حتى الآن."
+    target_watchlist = [item for item in WATCHLIST if (market == "sa" and item[0].endswith(".SR")) or (market == "us" and not item[0].endswith(".SR"))]
+    
+    def scan_for_qm(item):
+        ticker, interval = item
+        try:
+            df = fetch_yahoo_data(ticker, interval)
+            if len(df) < 50: return None
+            df['Body'] = abs(df['Close'] - df['Open'])
+            df['Sweep_Bull'] = df['Low'] < df['Low'].rolling(15).min().shift(1)
+            df['Sweep_Bear'] = df['High'] > df['High'].rolling(15).max().shift(1)
+            df['CHoCH_Bull'] = df['Close'] > df['High'].rolling(8).max().shift(1)
+            df['CHoCH_Bear'] = df['Close'] < df['Low'].rolling(8).min().shift(1)
+            
+            is_qm_bull = (df['Sweep_Bull'].tail(5).any()) and (df['CHoCH_Bull'].iloc[-1])
+            is_qm_bear = (df['Sweep_Bear'].tail(5).any()) and (df['CHoCH_Bear'].iloc[-1])
+            current_p = round(float(df['Close'].iloc[-1]), 2)
+            
+            if is_qm_bull:
+                log_quasimodo_setup(ticker, get_display_name(ticker), "شرائي 🟢", interval, current_p, "كوازمودو صاعد (تصفية سيولة القاع مع CHoCH صاعد)")
+                return {"ticker": ticker, "type": "👑 كوازمودو شرائي (صعود)", "price": current_p, "interval": interval}
+            elif is_qm_bear:
+                log_quasimodo_setup(ticker, get_display_name(ticker), "بيعي 🔴", interval, current_p, "كوازمودو هابط (تصفية سيولة القمة مع CHoCH هابط)")
+                return {"ticker": ticker, "type": "🩸 كوازمودو بيعي (هبوط)", "price": current_p, "interval": interval}
+        except: pass
+        return None
+
+    # مسح فائق السرعة عبر 15 معالج خيطي لمنع التجمد تماماً!
+    with ThreadPoolExecutor(max_workers=15) as executor:
+        results = list(executor.map(scan_for_qm, target_watchlist))
+        
+    qm_found = [r for r in results if r is not None]
+    
+    if not qm_found:
+        bot.edit_message_text(chat_id=m.chat.id, message_id=msg.message_id, text=f"📭 لم يتم رصد أي نموذج كوازمودو مكتمل حالياً في السوق {m_name}.", parse_mode="Markdown")
+        return
+        
+    reply = f"🎯 **نتائج رادار كوازمودو النشط في السوق {m_name}:**\n*(تم تدوين جميع هذه الأسهم في سجل التقرير اليومي)*\n\n"
+    for idx, item in enumerate(qm_found, 1):
+        reply += f"{idx}. **{get_display_name(item['ticker'])}** ({item['interval']})\n"
+        reply += f"   🔹 النموذج: {item['type']}\n"
+        reply += f"   💲 سعر الرصد: {item['price']}\n\n"
+        
+    try: bot.edit_message_text(chat_id=m.chat.id, message_id=msg.message_id, text=reply, parse_mode="Markdown")
+    except: bot.send_message(m.chat.id, reply, parse_mode="Markdown")
+
+# 📊 التقرير اليومي التفصيلي للذكاء الاصطناعي وذاكرة كوازمودو
+@bot.message_handler(func=lambda m: m.text.strip() == "📊 التقرير اليومي للـ AI")
+def show_daily_ai_report(m):
+    today_str = date.today().strftime('%Y-%m-%d')
+    total_trades = trade_history['wins'] + trade_history['losses']
+    win_rate_str = f"{(trade_history['wins']/total_trades)*100:.1f}%" if total_trades > 0 else "0.0%"
+    
+    reply = f"🧠 **التقرير اليومي المفصل لأداء الذكاء الاصطناعي ({today_str}):**\n"
+    reply += f"━━━━━━━━━━━━━━━━━━━━\n"
+    reply += f"📈 **مؤشرات الأداء العامة (KPIs):**\n"
+    reply += f"▪️ نسبة النجاح الكلية (Win Rate): **{win_rate_str}**\n"
+    reply += f"▪️ صفقات رابحة: {trade_history['wins']} | خاسرة: {trade_history['losses']}\n"
+    reply += f"▪️ صفقات قيد المراقبة الآن: {len(active_trades)}\n"
+    reply += f"▪️ النماذج المبتكرة المكتشفة بالكامل: {len(ai_learned_patterns)}\n"
+    reply += f"━━━━━━━━━━━━━━━━━━━━\n"
+    reply += f"💾 **سجل كوازمودو المكتشف لليوم:**\n"
+    
+    setups_today = []
+    if mongo_connected:
+        try:
+            today_log = quasimodo_col.find_one({"date": today_str})
+            if today_log and "setups" in today_log:
+                setups_today = today_log["setups"]
+        except Exception as e:
+            print(f"Error fetching daily setups from MongoDB: {e}")
+            
+    if not setups_today:
+        setups_today = in_memory_daily_quasimodo.get(today_str, [])
+        
+    if not setups_today:
+        reply += "📭 لم يتم رصد أو تسجيل أي نماذج كوازمودو حتى الآن اليوم.\n"
     else:
-        win_rate = (trade_history['wins'] / total) * 100
-        reply += f"📈 **نسبة نجاح الصفقات المغلقة:** {win_rate:.1f}%\n"
-        reply += f"✅ الصفقات الرابحة: {trade_history['wins']}\n"
-        reply += f"❌ الصفقات الخاسرة: {trade_history['losses']}\n"
-        reply += f"🔄 صفقات قيد المراقبة الآن: {len(active_trades)}\n\n"
-        reply += "**آخر الصفقات المغلقة:**\n"
-        for log in trade_history['log'][-5:]:
-            reply += f"▪️ {log}\n"
+        reply += f"🔥 تم رصد **{len(setups_today)}** نموذج كوازمودو اليوم:\n\n"
+        for idx, item in enumerate(setups_today, 1):
+            reply += f"{idx}. **{item['name']}** ({item['interval']})\n"
+            reply += f"   🏷️ الاتجاه: **{item['direction']}**\n"
+            reply += f"   💲 السعر: {item['price']}\n"
+            reply += f"   💡 التفاصيل: {item['details']}\n\n"
+            
+    reply += f"━━━━━━━━━━━━━━━━━━━━\n"
+    reply += f"🤖 **أحدث النماذج المبتكرة ذاتياً:**\n"
+    if not ai_learned_patterns:
+        reply += "▪️ في انتظار تشكيل أول نموذج إحصائي مخصص."
+    else:
+        for pat in ai_learned_patterns[-3:]:
+            reply += f"▪️ {pat}\n"
             
     bot.reply_to(m, reply, parse_mode="Markdown")
 
@@ -565,32 +681,36 @@ def show_todays_picks(m):
         for idx, (t, act) in enumerate(todays_picks.items(), 1): reply += f"{idx}. {get_display_name(t)} ⬅️ **{act}**\n"
         bot.reply_to(m, reply, parse_mode="Markdown")
 
+# 🚀 مسح شامل فائق السرعة لمنع التجمد
 @bot.message_handler(func=lambda m: "تصفية شاملة" in m.text.strip())
 def find_best_confluence(m):
     check_new_day()
     market = "sa" if "سعودي" in m.text else "us"
     m_name = "السعودي 🇸🇦" if market == "sa" else "الأمريكي 🇺🇸 (خيارات 1H)"
-    msg = bot.reply_to(m, f"🔍 **جاري بدء المسح الشامل للسوق {m_name}...**\n⏳ يرجى الانتظار، المسح الآمن قيد العمل...")
+    msg = bot.reply_to(m, f"🔍 **جاري بدء المسح الشامل للسوق {m_name}...**\n⚡ تم تفعيل وضع التيربو والمحرك المتوازي لمنع التجمد!")
 
     buys, sells = [], []
     error_count = 0
     target_watchlist = [item for item in WATCHLIST if (market == "sa" and item[0].endswith(".SR")) or (market == "us" and not item[0].endswith(".SR"))]
     total = len(target_watchlist)
 
-    for i, (t, interval) in enumerate(target_watchlist, 1):
+    def scan_single(item):
+        t, interval = item
         try:
-            res = get_immediate_signal(t, interval, record_alert=True)
-            if res and "error" not in res:
-                if "شراء فوري" in res['action']: buys.append((res['reason'].count('➕'), res))
-                elif "بيع فوري" in res['action']: sells.append((res['reason'].count('➖'), res))
-            else:
-                error_count += 1
+            return get_immediate_signal(t, interval, record_alert=True)
         except:
-            error_count += 1
+            return {"error": "timeout", "ticker": t}
 
-        if i % 10 == 0:
-            try: bot.edit_message_text(chat_id=m.chat.id, message_id=msg.message_id, text=f"🔍 **جاري المسح الشامل للسوق {m_name}...**\n⏳ **التقدم:** تم فحص {i} من أصل {total} سهم...\n*(محرك التيربو الذكي مفعل 🚀)*", parse_mode="Markdown")
-            except: pass
+    # فحص متوازي لـ 10 أسهم دفعة واحدة
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        results = list(executor.map(scan_single, target_watchlist))
+
+    for res in results:
+        if res and "error" not in res:
+            if "شراء فوري" in res['action']: buys.append((res['reason'].count('➕'), res))
+            elif "بيع فوري" in res['action']: sells.append((res['reason'].count('➖'), res))
+        else:
+            error_count += 1
 
     buys.sort(key=lambda x: x[0], reverse=True)
     sells.sort(key=lambda x: x[0], reverse=True)
@@ -599,7 +719,7 @@ def find_best_confluence(m):
         bot.edit_message_text(chat_id=m.chat.id, message_id=msg.message_id, text=f"لا توجد فرص قوية تتوافق مع الإجماع الفني الصارم حالياً.", parse_mode="Markdown")
         return
 
-    reply = "🏆 **أقوى الفرص بناءً على الإجماع الفني** 🏆\n\n"
+    reply = f"🏆 **أقوى الفرص بناءً على الإجماع الفني {m_name}** 🏆\n\n"
     if buys[:2]:
         reply += "🟢 **أقوى فرص الشراء (Call):**\n\n"
         for score, res in buys[:2]:
@@ -611,15 +731,44 @@ def find_best_confluence(m):
             todays_picks[res['ticker']] = "بيع 🔴"
             reply += f"#{sells.index((score,res))+1}\n{format_msg(res)}\n"
 
-    if error_count > 0: reply += f"\n⚠️ *(تنويه: تم تخطي بعض الأسهم لضمان سرعة الاتصال)*"
+    if error_count > 0: reply += f"\n⚠️ *(تنويه: تم تخطي {error_count} أسهم بطيئة لضمان استقرار الاتصال)*"
     
     try: bot.edit_message_text(chat_id=m.chat.id, message_id=msg.message_id, text=reply, parse_mode="Markdown")
     except: bot.send_message(m.chat.id, reply, parse_mode="Markdown")
 
+# التحكم بإضافة وإدارة الأسهم يدوياً
+@bot.message_handler(commands=['add'])
+def add_stock(m):
+    try:
+        parts = m.text.split()
+        if len(parts) < 3:
+            bot.reply_to(m, "⚠️ صيغة خاطئة! استخدم: `/add [الرمز] [الفريم]`\nمثال: `/add AAPL 1h`")
+            return
+        symbol, interval = parts[1].upper(), parts[2]
+        WATCHLIST.append((symbol, interval))
+        save_database()
+        bot.reply_to(m, f"✅ تم إضافة {symbol} بنجاح إلى قائمة الرادار ({interval})!")
+    except Exception as e: bot.reply_to(m, f"❌ حدث خطأ: {e}")
+
+@bot.message_handler(commands=['remove'])
+def remove_stock(m):
+    try:
+        symbol = m.text.split()[1].upper()
+        global WATCHLIST
+        WATCHLIST = [x for x in WATCHLIST if x[0] != symbol]
+        save_database()
+        bot.reply_to(m, f"🗑️ تم حذف {symbol} من قائمة المراقبة.")
+    except: bot.reply_to(m, "⚠️ استخدم: `/remove [الرمز]`")
+
+@bot.message_handler(commands=['list'])
+def list_stocks(m):
+    msg = "📋 **قائمة المراقبة الحالية:**\n" + "\n".join([f"▪| {x[0]} ({x[1]})" for x in WATCHLIST])
+    bot.reply_to(m, msg, parse_mode="Markdown")
+
 @bot.message_handler(func=lambda m: True)
 def analyze_manual_stock(m):
     text = m.text.strip().upper()
-    ignore = ["🇸🇦 تصفية شاملة (سعودي)", "🇺🇸 تصفية شاملة (أمريكي)", "⚙️ لوحة تحكم الرادار", "🎯 أسهم القناص (اليوم)", "📋 أسهم قائمة التصفيات", "📊 أداء الذكاء الاصطناعي"]
+    ignore = ["🇸🇦 تصفية شاملة (سعودي)", "🇺🇸 تصفية شاملة (أمريكي)", "⚙️ لوحة تحكم الرادار", "🎯 أسهم القناص (اليوم)", "📋 أسهم قائمة التصفيات", "📊 التقرير اليومي للـ AI", "🔍 كوازمودو سعودي 🇸🇦", "🔍 كوازمودو أمريكي 🇺🇸"]
     if text in ignore or text.startswith("/"): return
     
     t = ARABIC_TICKERS.get(text.replace("أ", "ا").replace("إ", "ا").replace("ة", "ه"), text)
@@ -631,18 +780,16 @@ def analyze_manual_stock(m):
     
     if res and "error" not in res:
         bot.edit_message_text(chat_id=m.chat.id, message_id=msg.message_id, text=format_msg(res), parse_mode="Markdown")
-        
-        # حفظ السهم السحابي تلقائياً
         if not any(item[0] == t for item in WATCHLIST):
             WATCHLIST.append((t, interval))
-            save_database() 
-            bot.send_message(m.chat.id, f"☁️ **تم تحديث السحابة:**\nتم إدراج السهم ({t}) تلقائياً في قاعدة البيانات للمراقبة المستمرة!", parse_mode="Markdown")
+            save_database()
+            bot.send_message(m.chat.id, f"✅ **تم تحديث الذاكرة:**\nتم إدراج السهم ({t}) تلقائياً في رادار القناص والذكاء الاصطناعي للمراقبة المستمرة!", parse_mode="Markdown")
     else:
         bot.edit_message_text(chat_id=m.chat.id, message_id=msg.message_id, text=f"⚠️ تعذر تحليل السهم.\n**السبب:** {res.get('error', 'السهم غير مدرج أو البيانات غير كافية.')}")
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return "🚀 البوت السحابي يعمل بنجاح ومزود بذاكرة MongoDB الدائمة!"
+def home(): return "🚀 البوت السحابي فائق السرعة يعمل بنجاح!"
 
 def run_server():
     port = int(os.environ.get("PORT", 8080))
@@ -650,9 +797,9 @@ def run_server():
 
 threading.Thread(target=run_server, daemon=True).start()
 
-print("=== جاري استرجاع البيانات من السحابة (MongoDB) ===")
+print("=== جاري استرجاع الذاكرة السحابية الدائمة ===")
 load_database()
-print(f"تم استرجاع قائمة أسهم بحجم: {len(WATCHLIST)} سهم بنجاح.")
+print(f"تم استرجاع قائمة أسهم بحجم: {len(WATCHLIST)} سهم.")
 
 print("=== تم التشغيل بنجاح ===")
 threading.Thread(target=auto_scanner, daemon=True).start()
